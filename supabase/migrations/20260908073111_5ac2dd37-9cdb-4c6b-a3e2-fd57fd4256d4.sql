@@ -1,0 +1,1 @@
+REVOKE ALL ON FUNCTION public.proposals_guard_conversion() FROM PUBLIC, anon, authenticated;

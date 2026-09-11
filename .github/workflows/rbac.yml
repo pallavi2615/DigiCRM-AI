@@ -1,0 +1,125 @@
+name: RBAC & Contacts UI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: rbac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rbac:
+    name: REST RBAC + audit + Playwright UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+      TEST_ADMIN_EMAIL: ${{ vars.TEST_ADMIN_EMAIL || 'admin@digicrm.demo' }}
+      TEST_MANAGER_EMAIL: ${{ vars.TEST_MANAGER_EMAIL || 'manager@digicrm.demo' }}
+      TEST_EXEC_EMAIL: ${{ vars.TEST_EXEC_EMAIL || 'executive@digicrm.demo' }}
+      APP_URL: http://localhost:8080
+      VITE_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      VITE_SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Preflight — required secrets
+        run: |
+          missing=""
+          for v in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY SUPABASE_ANON_KEY TEST_USER_PASSWORD; do
+            if [ -z "${!v}" ]; then missing="$missing $v"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secrets:$missing"; exit 1;
+          fi
+
+      - name: Install app deps
+        run: bun install --frozen-lockfile
+
+      - name: Install test deps
+        run: |
+          bun add -d @supabase/supabase-js
+          pip install --quiet playwright supabase
+          python -m playwright install --with-deps chromium
+
+      - name: Start dev server
+        run: |
+          nohup bun run dev > dev.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080 >/dev/null; then echo "ready"; exit 0; fi
+            sleep 2
+          done
+          echo "dev server never came up"; tail -n 200 dev.log; exit 1
+
+      - name: REST RBAC + audit assertions
+        run: node tests/rbac_rest.mjs
+
+      - name: CSV import/export RBAC (all roles)
+        run: node tests/csv_rbac.mjs
+
+      - name: Realtime isolation (Sales Executive)
+        run: node tests/realtime_isolation.mjs
+
+      - name: Playwright — /contacts pagination isolation
+        run: python tests/contacts_ui.py
+
+      - name: Playwright — CSV import/export RBAC UI (all roles)
+        run: python tests/csv_ui.py
+
+      - name: Storage RBAC (attachments bucket, all roles)
+        run: node tests/storage_rbac.mjs
+
+      - name: Storage signed URLs — expiry + unauthorized rejection + audit
+        run: node tests/storage_signed_urls.mjs
+
+      - name: AI Assistant / Proposal RBAC
+        run: node tests/ai_rbac.mjs
+
+      - name: AI Proposal export — exec-only data + denied audit
+        run: node tests/ai_proposal_export.mjs
+
+      - name: Settings & Profile API RBAC (RLS + audit)
+        run: node tests/settings_api_rbac.mjs
+
+      - name: Playwright — Settings & Profile RBAC (all roles)
+        run: python tests/settings_ui.py
+
+      - name: Industry E2E — IT + RE RBAC + audit_row_change
+        run: node tests/industry_e2e_rbac_audit.mjs
+
+      - name: Lenders / Loan Products / PS Products RBAC (RLS + role gate)
+        run: node tests/lenders_products_rbac_e2e.mjs
+
+      - name: Lenders / Loan Products / PS Products WRITE RBAC (UPDATE + DELETE, 2 tenants)
+        run: node tests/lenders_products_write_rbac_e2e.mjs
+
+      - name: Permission matrix regression (all roles, all modules)
+        run: node tests/permissions_regression_e2e.mjs
+
+
+
+
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rbac-artifacts
+          path: |
+            tests/.artifacts/**
+            dev.log
+          if-no-files-found: ignore

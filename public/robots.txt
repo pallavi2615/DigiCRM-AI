@@ -1,0 +1,25 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /leads
+Disallow: /contacts
+Disallow: /companies
+Disallow: /pipeline
+Disallow: /tasks
+Disallow: /calendar
+Disallow: /meetings
+Disallow: /reports
+Disallow: /ai
+Disallow: /proposals
+Disallow: /automation
+Disallow: /notifications
+Disallow: /settings
+Disallow: /audit-logs
+Disallow: /fintech
+Disallow: /realestate
+Disallow: /it
+Disallow: /productsales
+Disallow: /auth
+Disallow: /reset-password
+
+Sitemap: https://digicrm-ai-buddy.lovable.app/sitemap.xml

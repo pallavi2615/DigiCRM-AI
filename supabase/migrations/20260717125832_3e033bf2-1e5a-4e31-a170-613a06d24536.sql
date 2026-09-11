@@ -1,0 +1,1 @@
+REVOKE EXECUTE ON FUNCTION public.ps_calc_commissions() FROM PUBLIC, anon, authenticated;

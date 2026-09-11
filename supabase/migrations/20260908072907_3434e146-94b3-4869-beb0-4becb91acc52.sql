@@ -1,0 +1,1 @@
+GRANT EXECUTE ON FUNCTION private.can_see_tenant(uuid) TO authenticated;

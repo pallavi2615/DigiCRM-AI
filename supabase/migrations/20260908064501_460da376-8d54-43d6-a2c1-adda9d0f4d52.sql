@@ -1,0 +1,1 @@
+REVOKE ALL ON FUNCTION public.set_industry_group() FROM PUBLIC, anon, authenticated;

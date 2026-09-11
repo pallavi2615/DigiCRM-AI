@@ -1,0 +1,1 @@
+DROP FUNCTION IF EXISTS public.affiliate_payout_summary();

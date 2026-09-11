@@ -1,0 +1,3 @@
+company_name,contact_person,email,phone,industry,source,status,priority,estimated_value,expected_close_date
+CSVUI1783672576626-manager-lead-1,Jane,manager@x.io,555,SaaS,Web,new,high,1000,2027-01-01
+CSVUI1783672576626-manager-lead-2,John,manager2@x.io,555,SaaS,Web,new,low,500,2027-01-02
