@@ -112,7 +112,12 @@ const emptyForm = {
 
 function LeadsPage() {
   const urlSearch = useSearch({ from: "/_authenticated/leads" });
-  const statusFromUrl = (urlSearch as { status?: string }).status;
+
+const statusFromUrl = (urlSearch as { status?: string }).status;
+
+const industryGroupFromUrl = (
+  urlSearch as { industry_group?: string }
+).industry_group;
   const perms = usePermissions();
   const canCreate = perms.canCreate("leads");
   const canEdit = perms.canEdit("leads");
@@ -140,21 +145,55 @@ function LeadsPage() {
   }, [statusFromUrl]);
 
   const { data: leads, isLoading } = useQuery({
-    queryKey: ["leads", search, statusFilter, priorityFilter, page, crmGroup],
-    queryFn: async () => {
-      let q = supabase.from("leads").select("*", { count: "exact" })
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false })
-        .range(page * pageSize, page * pageSize + pageSize - 1);
-      q = scopeToIndustry(q, crmGroup);
-      if (search) q = q.or(`company_name.ilike.%${escapePostgrestFilterValue(search)}%,contact_person.ilike.%${escapePostgrestFilterValue(search)}%,email.ilike.%${escapePostgrestFilterValue(search)}%`);
-      if (statusFilter !== "all") q = q.eq("status", statusFilter as LeadStatus);
-      if (priorityFilter !== "all") q = q.eq("priority", priorityFilter as LeadPriority);
-      const { data, count, error } = await q;
-      if (error) throw error;
-      return { rows: (data ?? []) as Lead[], count: count ?? 0 };
-    },
-  });
+  queryKey: [
+    "leads",
+    search,
+    statusFilter,
+    priorityFilter,
+    page,
+    industryGroupFromUrl ?? "all",
+  ],
+
+  queryFn: async () => {
+    let q = supabase
+      .from("leads")
+      .select("*", { count: "exact" })
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .range(
+        page * pageSize,
+        page * pageSize + pageSize - 1
+      );
+
+    // Apply CRM filter only when a CRM was selected
+    if (industryGroupFromUrl) {
+      q = q.eq("industry_group", industryGroupFromUrl);
+    }
+
+    if (search) {
+      q = q.or(
+        `company_name.ilike.%${escapePostgrestFilterValue(search)}%,contact_person.ilike.%${escapePostgrestFilterValue(search)}%,email.ilike.%${escapePostgrestFilterValue(search)}%`
+      );
+    }
+
+    if (statusFilter !== "all") {
+      q = q.eq("status", statusFilter as LeadStatus);
+    }
+
+    if (priorityFilter !== "all") {
+      q = q.eq("priority", priorityFilter as LeadPriority);
+    }
+
+    const { data, count, error } = await q;
+
+    if (error) throw error;
+
+    return {
+      rows: (data ?? []) as Lead[],
+      count: count ?? 0,
+    };
+  },
+});
 
   const saveMutation = useMutation({
     mutationFn: async () => {

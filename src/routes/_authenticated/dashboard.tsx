@@ -28,6 +28,13 @@ import { CSS } from "@dnd-kit/utilities";
 import { GlobalSearch } from "@/components/global-search";
 import { useActiveIndustry, scopeToIndustry } from "@/lib/active-industry";
 import { Link } from "@tanstack/react-router";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard — DigiCRM AI" }] }),
@@ -56,7 +63,7 @@ async function fetchKpis(g: string | null): Promise<KpiData> {
   ]);
   const leads = leadsRes.data ?? [];
   const totalLeads = leads.length;
-  const qualified = leads.filter(l => ["qualified","proposal_sent","negotiation"].includes(l.status)).length;
+  const qualified = leads.filter(l => l.status === "qualified").length;
   const openDeals = leads.filter(l => !["won","lost"].includes(l.status)).length;
   const won = leads.filter(l => l.status === "won").length;
   const lost = leads.filter(l => l.status === "lost").length;
@@ -165,8 +172,20 @@ const KPI_WIDGETS: KpiSpec[] = [
   { id: "tasksToday", title: "Tasks Today", get: (k) => String(k?.tasksToday ?? 0), icon: CheckSquare, to: "/tasks" },
 ];
 
-function SortableKpi({ spec, kpi, hidden, onHide, editing }: {
-  spec: KpiSpec; kpi: KpiData | undefined; hidden: boolean; onHide: () => void; editing: boolean;
+function SortableKpi({
+  spec,
+  kpi,
+  hidden,
+  onHide,
+  editing,
+  selectedCrm,
+}: {
+  spec: KpiSpec;
+  kpi: KpiData | undefined;
+  hidden: boolean;
+  onHide: () => void;
+  editing: boolean;
+  selectedCrm: string;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: spec.id });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 };
@@ -184,7 +203,17 @@ function SortableKpi({ spec, kpi, hidden, onHide, editing }: {
         </div>
       )}
       {spec.to && !editing ? (
-        <Link to={spec.to} search={spec.search as never} className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-xl">
+        <Link
+              to={spec.to}
+              search={
+                spec.id === "totalLeads"
+                  ? ({
+                      ...(spec.search ?? {}),
+                      industry_group: selectedCrm === "all" ? undefined : selectedCrm,
+                    } as never)
+                  : (spec.search as never)
+              }
+              className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-xl">
           <KpiCard title={spec.title} value={spec.get(kpi)} icon={spec.icon} accent={spec.accent} />
         </Link>
       ) : (
@@ -201,12 +230,55 @@ function Dashboard() {
   const [order, setOrder] = useState<string[]>(KPI_WIDGETS.map(w => w.id));
   const [hidden, setHidden] = useState<string[]>([]);
 
-  const { group: crmGroup, activeName } = useActiveIndustry();
-  const { data: kpi } = useQuery({ queryKey: ["kpi", crmGroup], queryFn: () => fetchKpis(crmGroup) });
-  const { data: funnel } = useQuery({ queryKey: ["funnel", crmGroup], queryFn: () => fetchFunnel(crmGroup) });
-  const { data: sources } = useQuery({ queryKey: ["sources", crmGroup], queryFn: () => fetchSources(crmGroup) });
-  const { data: monthly } = useQuery({ queryKey: ["monthly", crmGroup], queryFn: () => fetchMonthlyRevenue(crmGroup) });
-  const { data: activities } = useQuery({ queryKey: ["activities"], queryFn: fetchRecentActivities });
+const [selectedCrm, setSelectedCrm] = useState<string>("all");
+
+const { data: crmOptions = [] } = useQuery({
+  queryKey: ["dashboard-crm-options"],
+  queryFn: async () => {
+    const { data, error } = await supabase
+      .from("leads")
+      .select("industry_group")
+      .is("deleted_at", null)
+      .not("industry_group", "is", null);
+
+    if (error) throw error;
+
+    return Array.from(
+      new Set(
+        (data ?? [])
+          .map((row) => row.industry_group)
+          .filter(Boolean)
+      )
+    ).sort();
+  },
+});
+
+const dashboardCrm = selectedCrm === "all" ? null : selectedCrm;
+
+const { data: kpi } = useQuery({
+  queryKey: ["kpi", dashboardCrm],
+  queryFn: () => fetchKpis(dashboardCrm),
+});
+
+const { data: funnel } = useQuery({
+  queryKey: ["funnel", dashboardCrm],
+  queryFn: () => fetchFunnel(dashboardCrm),
+});
+
+const { data: sources } = useQuery({
+  queryKey: ["sources", dashboardCrm],
+  queryFn: () => fetchSources(dashboardCrm),
+});
+
+const { data: monthly } = useQuery({
+  queryKey: ["monthly", dashboardCrm],
+  queryFn: () => fetchMonthlyRevenue(dashboardCrm),
+});
+
+const { data: activities } = useQuery({
+  queryKey: ["activities"],
+  queryFn: fetchRecentActivities,
+});
 
   // Realtime auto-refresh from any authorized source table
   useRealtimeTable("leads", [["kpi"], ["funnel"], ["sources"], ["monthly"], ["pipeline-deals"]]);
@@ -265,12 +337,33 @@ function Dashboard() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold">Dashboard</h1>
-          <p className="text-muted-foreground text-sm mt-1">{crmGroup ? `${activeName} — live overview of your pipeline and performance.` : "Real-time overview of your sales pipeline and performance."}</p>
-        </div>
+          <p className="text-muted-foreground text-sm mt-1">
+            Real-time overview of all CRM pipelines and performance.
+          </p></div>
         <div className="flex items-center gap-2 flex-wrap">
           <Badge variant="outline" className="gap-1.5">
             <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" /> Live
           </Badge>
+          <Select
+            value={selectedCrm}
+            onValueChange={setSelectedCrm}
+          >
+            <SelectTrigger className="w-42.5">
+              <SelectValue placeholder="Select CRM" />
+            </SelectTrigger>
+
+            <SelectContent>
+              <SelectItem value="all">
+                All CRMs
+              </SelectItem>
+
+              {crmOptions.map((crm) => (
+                <SelectItem key={crm} value={crm}>
+                  {crm}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button variant="outline" size="sm" onClick={() => setSearchOpen(true)} className="gap-2">
             <Search className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Search</span>
             <kbd className="hidden md:inline text-[10px] px-1 py-0.5 rounded border bg-muted">⌘K</kbd>
@@ -295,7 +388,15 @@ function Dashboard() {
         <SortableContext items={order} strategy={horizontalListSortingStrategy}>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
             {orderedSpecs.map(spec => (
-              <SortableKpi key={spec.id} spec={spec} kpi={kpi} hidden={hidden.includes(spec.id)} onHide={() => hideWidget(spec.id)} editing={editing} />
+              <SortableKpi
+                key={spec.id}
+                spec={spec}
+                kpi={kpi}
+                hidden={hidden.includes(spec.id)}
+                onHide={() => hideWidget(spec.id)}
+                editing={editing}
+                selectedCrm={selectedCrm}
+              />
             ))}
           </div>
         </SortableContext>

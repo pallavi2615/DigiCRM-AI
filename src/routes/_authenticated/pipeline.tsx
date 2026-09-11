@@ -26,6 +26,7 @@ import { useRealtimeTable } from "@/lib/use-realtime-table";
 import { convertProposalToDeal, proposalStageToDealStage, canConvert, type ProposalStage, type ApprovalStatus } from "@/lib/proposal-deal";
 import { ApprovalBadge, ApprovalHistory, ProposalTimeline } from "@/components/proposal-timeline";
 
+import { DatePicker } from "@/components/ui/datetime-picker";
 
 export const Route = createFileRoute("/_authenticated/pipeline")({
   head: () => ({ meta: [{ title: "Pipeline — DigiCRM AI" }] }),
@@ -119,20 +120,30 @@ function PipelinePage() {
   };
 
   const saveDeal = async () => {
-    if (!detail) return;
-    const { error } = await supabase.from("leads").update({
+  if (!detail) return;
+
+  const { error } = await supabase
+    .from("leads")
+    .update({
       status: edit.status,
-      estimated_value: edit.estimated_value === "" ? null : Number(edit.estimated_value),
+      estimated_value:
+        edit.estimated_value === ""
+          ? null
+          : Number(edit.estimated_value),
       priority: edit.priority as "low" | "medium" | "high" | "urgent",
       expected_close_date: edit.expected_close_date || null,
       notes: edit.notes || null,
-    }).eq("id", detail.id);
-    if (error) return notifyPermissionDenied(error);
-    toast.success("Deal updated");
-    setDetail(null);
-    qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
-    qc.invalidateQueries({ queryKey: ["kpi"] });
-  };
+    })
+    .eq("id", detail.id);
+
+  if (error) return notifyPermissionDenied(error);
+
+  toast.success("Deal updated");
+  setDetail(null);
+
+  qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
+  qc.invalidateQueries({ queryKey: ["kpi"] });
+};
 
   const { group: crmGroup } = useActiveIndustry();
 
@@ -377,9 +388,19 @@ function PipelinePage() {
                     <div className="space-y-1.5"><Label>Deal value</Label>
                       <Input type="number" min={0} value={edit.estimated_value} onChange={(e) => setEdit({ ...edit, estimated_value: e.target.value })} />
                     </div>
-                    <div className="space-y-1.5"><Label>Expected close</Label>
-                      <Input type="date" value={edit.expected_close_date} onChange={(e) => setEdit({ ...edit, expected_close_date: e.target.value })} />
-                    </div>
+                    <div className="space-y-1.5">
+                          <Label>Expected close</Label>
+                          <DatePicker
+                            value={edit.expected_close_date}
+                            onChange={(val) =>
+                              setEdit((prev) => ({
+                                ...prev,
+                                expected_close_date: val,
+                              }))
+                            }
+                            placeholder="Select Expected Close Date"
+                          />
+                        </div>
                   </div>
                   <div className="space-y-1.5"><Label>Notes</Label>
                     <Textarea rows={3} value={edit.notes} onChange={(e) => setEdit({ ...edit, notes: e.target.value })} />
