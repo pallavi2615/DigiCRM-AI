@@ -364,3 +364,53 @@ function LandingPage() {
     </SiteShell>
   );
 }
+
+
+
+// src/api/index.ts
+// import axios from 'axios';
+
+// const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+
+// const api = axios.create({
+//   baseURL: API_URL,
+//   headers: { 'Content-Type': 'application/json' },
+// });
+
+// api.interceptors.request.use((config) => {
+//   const token = localStorage.getItem('access_token');
+//   if (token) config.headers.Authorization = `Bearer ${token}`;
+//   return config;
+// });
+
+// api.interceptors.response.use(
+//   (response) => response,
+//   (error) => {
+//     if (error.response?.status === 401) {
+//       localStorage.removeItem('access_token');
+//       localStorage.removeItem('refresh_token');
+//       localStorage.removeItem('user');
+//       if (window.location.pathname !== '/auth') {
+//         window.location.href = '/auth';
+//       }
+//     }
+//     return Promise.reject(error);
+//   }
+// );
+
+// export const authAPI = {
+//   signUp: (data: { full_name: string; email: string; password: string; role?: string }) =>
+//     api.post('/auth/signup', data),
+//   signIn: (data: { email: string; password: string }) =>
+//     api.post('/auth/signin', data),
+//   forgotPassword: (email: string) =>
+//     api.post('/auth/forgot-password', { email }),
+//   resetPassword: (token: string, new_password: string) =>
+//     api.post('/auth/reset-password', { token, new_password }),
+//   getMe: () => api.get('/auth/me'),
+//   logout: () => api.post('/auth/logout'),
+//   changePassword: (old_password: string, new_password: string) =>
+//     api.post('/auth/change-password', { old_password, new_password }),
+// };
+
+// export default api;

@@ -1,4 +1,4 @@
-import { useAuth } from "@/hooks/use-auth";
+import { useUser } from "@/hooks/use-user";
 import { useIndustryAccess, groupForRoute } from "@/lib/industry-access";
 import { useActiveIndustry } from "@/lib/active-industry";
 import { Link, useRouterState } from "@tanstack/react-router";
@@ -94,7 +94,8 @@ const superAdminOnly = [
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
-  const { roles } = useAuth();
+  const { user } = useUser();
+  const roles = user?.role ? [user.role] : [];
   const access = useIndustryAccess();
   const { group: activeGroup, activeName } = useActiveIndustry();
   const isSuperAdmin = roles.includes("super_admin");
