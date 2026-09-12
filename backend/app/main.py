@@ -4,7 +4,7 @@ from app.database import engine, Base
 from app.routes import auth
 
 # Create tables
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="DigiCRM AI API",

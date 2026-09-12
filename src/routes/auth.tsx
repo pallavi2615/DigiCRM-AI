@@ -1,6 +1,5 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { Sparkles, Eye, EyeOff, Loader2 } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -59,50 +59,130 @@ function AuthPage() {
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navigate({ to: "/dashboard" });
-    });
-  }, [navigate]);
+ useEffect(() => {
+  const token = localStorage.getItem("access_token");
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) return toast.error(error.message);
-    toast.success("Welcome back!");
+  if (token) {
     navigate({ to: "/dashboard" });
-  };
+  }
+}, [navigate]);
 
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: window.location.origin,
-        data: { full_name: fullName },
+const handleLogin = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setLoading(true);
+
+  try {
+    const response = await apiFetch("/api/auth/signin", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        password,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      toast.error(data.detail || "Invalid email or password");
+      return;
+    }
+
+    // Store JWT tokens
+    localStorage.setItem("access_token", data.access_token);
+    localStorage.setItem("refresh_token", data.refresh_token);
+
+    // Optional: store user information
+    localStorage.setItem("user", JSON.stringify(data.user));
+
+    toast.success("Welcome back!");
+
+    navigate({ to: "/dashboard" });
+
+  } catch (error) {
+    console.error("Login error:", error);
+    toast.error("Unable to connect to server");
+  } finally {
+    setLoading(false);
+  }
+};
+
+const handleSignup = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setLoading(true);
+
+  try {
+    const response = await apiFetch("/api/auth/signup", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
       },
-    });
-    setLoading(false);
-    if (error) return toast.error(error.message);
-    toast.success("Account created! Check your email to verify.");
-    setMode("login");
-  };
+        body: JSON.stringify({
+          full_name: fullName,
+          email,
+          password,
+          role: "executive",
+        }),
+      }
+    );
 
-  const handleForgot = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      toast.error(data.detail || "Signup failed");
+      return;
+    }
+
+    // Store tokens returned by backend
+    localStorage.setItem("access_token", data.access_token);
+    localStorage.setItem("refresh_token", data.refresh_token);
+    localStorage.setItem("user", JSON.stringify(data.user));
+
+    toast.success("Account created successfully!");
+
+    navigate({ to: "/dashboard" });
+
+  } catch (error) {
+    console.error("Signup error:", error);
+    toast.error("Unable to connect to server");
+  } finally {
     setLoading(false);
-    if (error) return toast.error(error.message);
-    toast.success("Password reset email sent.");
+  }
+};
+
+const handleForgot = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setLoading(true);
+
+  try {
+    const response = await apiFetch("/api/auth/forgot-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+        body: JSON.stringify({
+          email,
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      toast.error(data.detail || "Something went wrong");
+      return;
+    }
+
+    toast.success("Password reset link sent.");
+
     setMode("login");
-  };
+
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    toast.error("Unable to connect to server");
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleGoogle = async () => {
     setLoading(true);
