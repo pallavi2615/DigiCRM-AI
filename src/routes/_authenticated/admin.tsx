@@ -158,7 +158,7 @@ function UsersAdmin() {
         <div className="divide-y border rounded-lg">
           {filtered.map((p) => (
             <div key={p.id} className="p-3 flex flex-wrap items-center gap-3">
-              <div className="flex-1 min-w-[200px]">
+              <div className="flex-1 min-w-50">
                 <p className="font-medium">{p.full_name || p.email}</p>
                 <p className="text-xs text-muted-foreground">{p.email}</p>
               </div>
@@ -169,7 +169,7 @@ function UsersAdmin() {
                 disabled={!canChange || p.id === user?.id}
                 onValueChange={(v) => setPending({ person: p, role: v as AppRole })}
               >
-                <SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-45"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {ROLES.map((r) => <SelectItem key={r} value={r}>{ROLE_LABEL[r]}</SelectItem>)}
                 </SelectContent>

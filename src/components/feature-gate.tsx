@@ -2,8 +2,8 @@ import { Link } from "@tanstack/react-router";
 import { Sparkles, Lock } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { useHasFeature } from "@/lib/plan";
-import { useActiveTenant } from "@/lib/tenants";
+import { useHasFeature, type Plan } from "@/lib/plan";
+import { useActiveTenant } from "@/lib/queries/tenants";
 import type { ReactNode } from "react";
 
 export function FeatureGate({
@@ -16,7 +16,10 @@ export function FeatureGate({
   compact?: boolean;
 }) {
   const { active } = useActiveTenant();
-  const allowed = useHasFeature(active?.plan, feature);
+  const allowed = useHasFeature(
+    (active as (typeof active & { plan?: Plan }) | null | undefined)?.plan,
+    feature,
+  );
 
   if (allowed) return <>{children}</>;
   if (compact) {
@@ -29,7 +32,7 @@ export function FeatureGate({
   return (
     <Card className="border-dashed">
       <CardContent className="p-8 text-center space-y-3">
-        <div className="mx-auto h-12 w-12 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center">
+        <div className="mx-auto h-12 w-12 rounded-full bg-linear-to-br from-primary to-accent flex items-center justify-center">
           <Sparkles className="h-6 w-6 text-primary-foreground" />
         </div>
         <h3 className="text-lg font-semibold">Upgrade to Prime</h3>

@@ -271,7 +271,17 @@ interface PackRef { group: string; slug: string }
 export const aiChat = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((data: unknown) => {
-    const d = data as { messages: Msg[]; context?: EntityRef[]; pack?: PackRef; tenantId?: string | null };
+    const d = data as {
+  accessToken: string;
+  messages: Msg[];
+  context?: EntityRef[];
+  pack?: PackRef;
+  tenantId?: string | null;
+};
+
+if (!d.accessToken) {
+  throw new Error("Unauthorized: No token provided");
+}
     if (!d?.messages || !Array.isArray(d.messages)) throw new Error("messages required");
     if (d.context && !Array.isArray(d.context)) throw new Error("context must be array");
     return d;

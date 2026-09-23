@@ -1,138 +1,141 @@
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 
-/** Proposal stages used across the Proposals module. */
-export const PROPOSAL_STAGES = ["draft", "sent", "negotiation", "accepted", "rejected"] as const;
+/** Proposal statuses used across the Proposals module. */
+export const PROPOSAL_STAGES = ["draft", "sent", "negotiation", "accepted", "declined"] as const;
 export type ProposalStage = (typeof PROPOSAL_STAGES)[number];
 
+/** Pipeline status values on a Lead. */
 export type LeadStatus =
   | "new" | "contacted" | "qualified" | "proposal_sent" | "negotiation" | "won" | "lost";
 
-/** Which pipeline stage a proposal lands in when converted. */
+/** Suggested lead pipeline status for a given proposal stage. */
 export const proposalStageToDealStage: Record<ProposalStage, LeadStatus> = {
   draft: "qualified",
   sent: "proposal_sent",
   negotiation: "negotiation",
   accepted: "won",
-  rejected: "lost",
+  declined: "lost",
 };
 
-export const APPROVAL_STATUSES = ["not_requested", "pending", "approved", "rejected"] as const;
+export const APPROVAL_STATUSES = ["pending", "approved", "rejected"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 export const approvalLabel: Record<ApprovalStatus, string> = {
-  not_requested: "Approval not requested",
   pending: "Awaiting approval",
   approved: "Approved",
   rejected: "Approval rejected",
 };
 
 export interface ConvertibleProposal {
-  id: string;
+  id: number;
   title: string;
-  lead_id: string | null;
-  contact_id: string | null;
-  company_id: string | null;
-  stage: ProposalStage;
-  value: number;
-  close_date: string | null;
-  owner_id: string | null;
-  notes: string | null;
+  description: string | null;
+  lead_id: number | null;
+  lead_name: string | null;
+  status: string;
   approval_status?: ApprovalStatus | null;
+  pipeline_stage?: string | null;
+  amount: string | number;
+  currency: string;
+  valid_until: string | null;
+  terms: string | null;
+  probability: number;
+  close_date: string | null;
+  owner: string | null;
+  version: string | null;
+  template_id: number | null;
 }
 
+export interface ConvertibleLead {
+  id: number;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  company: string | null;
+  message: string | null;
+  status: string | null;
+  priority: string | null;
+  value: string | null;
+  assigned_to: number | null;
+  score: number | null;
+  custom_fields?: Record<string, unknown> | null;
+}
 
 export interface ConvertOptions {
-  /** Pipeline stage for the resulting deal. */
+  /** Pipeline stage to set on the linked lead. */
   dealStage: LeadStatus;
-  /** Deal value in ₹. */
+  /** Deal value to set on the linked lead. */
   value: number;
-  /** Owner (assigned_to) of the resulting deal. */
-  ownerId: string;
-  /** Current signed-in user id — required by the leads insert policy. */
-  userId: string;
 }
 
-/** A proposal must be approved before it can become (or update) a pipeline deal. */
+/** A proposal must be approved before it can push changes to its linked lead. */
 export function canConvert(p: { approval_status?: ApprovalStatus | null }) {
-  return (p.approval_status ?? "not_requested") === "approved";
+  return p.approval_status === "approved";
 }
 
 /**
- * Turns a proposal into a Pipeline deal (a row in `leads`).
- * Re-uses the linked lead when the proposal already has one, otherwise creates
- * a new lead from the linked company/contact and links it back to the proposal.
- * Requires the proposal to be approved.
+ * Pushes a proposal's outcome into its linked lead: updates the lead's pipeline
+ * status and value, then marks the proposal itself as converted.
+ *
+ * Unlike the old Supabase version, a proposal here can only ever be linked to an
+ * *existing* lead — there's no company/contact data on a proposal to create a new
+ * lead from — so this never creates a lead, it only updates the one already linked.
  */
-export async function convertProposalToDeal(p: ConvertibleProposal, opts: ConvertOptions) {
-  if (!canConvert(p)) {
+export async function convertProposalToDeal(
+  proposal: ConvertibleProposal,
+  lead: ConvertibleLead,
+  opts: ConvertOptions,
+) {
+  if (!proposal.lead_id) {
+    throw new Error("This proposal isn't linked to a lead yet — link one before converting.");
+  }
+  if (!canConvert(proposal)) {
     throw new Error("This proposal needs manager approval before it can move to the pipeline.");
   }
-  if (p.lead_id) {
-    const { error } = await supabase
-      .from("leads")
-      .update({
-        status: opts.dealStage,
-        estimated_value: opts.value,
-        assigned_to: opts.ownerId || null,
-        expected_close_date: p.close_date,
-      })
-      .eq("id", p.lead_id);
-    if (error) throw error;
-    await supabase.from("proposal_events").insert({
-      proposal_id: p.id,
-      lead_id: p.lead_id,
-      event_type: "deal_updated",
-      description: `Linked deal updated — stage ${opts.dealStage.replace("_", " ")}, value ₹${opts.value.toLocaleString()}`,
-      actor_id: opts.userId,
-    });
-    return { leadId: p.lead_id, created: false };
-  }
 
-
-  let companyName = p.title;
-  let contactPerson: string | null = null;
-  let email: string | null = null;
-  let phone: string | null = null;
-
-  if (p.company_id) {
-    const { data } = await supabase.from("companies").select("name, industry, email, phone").eq("id", p.company_id).maybeSingle();
-    if (data?.name) companyName = data.name;
-    email = data?.email ?? null;
-    phone = data?.phone ?? null;
-  }
-  if (p.contact_id) {
-    const { data } = await supabase
-      .from("contacts").select("first_name, last_name, email, phone").eq("id", p.contact_id).maybeSingle();
-    if (data) {
-      contactPerson = [data.first_name, data.last_name].filter(Boolean).join(" ") || null;
-      email = email ?? data.email ?? null;
-      phone = phone ?? data.phone ?? null;
-    }
-  }
-
-  const { data: lead, error } = await supabase
-    .from("leads")
-    .insert({
-      company_name: companyName,
-      contact_person: contactPerson,
-      email,
-      phone,
-      company_id: p.company_id,
-      contact_id: p.contact_id,
+  // Leads are updated via a full PUT — replay every field, overriding status/value.
+  await apiFetch(`/api/v1/leads/${lead.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name: lead.name,
+      email: lead.email,
+      phone: lead.phone,
+      company: lead.company,
+      message: lead.message,
       status: opts.dealStage,
-      estimated_value: opts.value,
-      expected_close_date: p.close_date,
-      assigned_to: opts.ownerId || opts.userId,
-      created_by: opts.userId,
-      source: "proposal",
-      notes: p.notes,
-    })
-    .select("id")
-    .single();
-  if (error) throw error;
+      priority: lead.priority,
+      value: opts.value,
+      assigned_to: lead.assigned_to,
+      score: lead.score,
+      custom_fields: lead.custom_fields ?? {},
+    }),
+  });
 
-  const { error: linkError } = await supabase.from("proposals").update({ lead_id: lead.id }).eq("id", p.id);
-  if (linkError) throw linkError;
+  // Same story for proposals — PUT needs the full object back, so replay it with
+  // pipeline_stage updated. "in_pipeline" matches the value the GET /api/v1/proposals
+  // list endpoint actually returns (confirmed from the live schema) — the earlier
+  // "converted" placeholder wouldn't have matched anything the UI checks for.
+  await apiFetch(`/api/v1/proposals/${proposal.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      lead_id: proposal.lead_id,
+      title: proposal.title,
+      description: proposal.description,
+      amount: Number(proposal.amount),
+      currency: proposal.currency,
+      valid_until: proposal.valid_until,
+      terms: proposal.terms,
+      status: proposal.status,
+      probability: proposal.probability,
+      close_date: proposal.close_date,
+      owner: proposal.owner,
+      version: proposal.version,
+      approval_status: proposal.approval_status,
+      pipeline_stage: "in_pipeline",
+      lead_name: proposal.lead_name,
+      template_id: proposal.template_id,
+    }),
+  });
 
-  return { leadId: lead.id as string, created: true };
+  return { leadId: lead.id };
 }

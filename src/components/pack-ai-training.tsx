@@ -16,7 +16,7 @@ export type TrainingExample = { question: string; answer: string };
  * worked examples. Rows are RLS-scoped to the workspace, so one tenant's
  * wording never leaks into another tenant's answers.
  */
-export function PackAiTraining({ tenantId, group, slug }: { tenantId: string; group: string; slug: string }) {
+export function PackAiTraining({ tenantId, group, slug }: { tenantId: number; group: string; slug: string }) {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ["pack-ai-training", tenantId, group, slug],

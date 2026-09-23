@@ -19,7 +19,7 @@ export const Route = createFileRoute("/landing-pages")({
 function LandingPagesShowcase() {
   return (
     <SiteShell>
-      <section className="py-20 px-6 border-b bg-gradient-to-b from-primary/5 to-transparent">
+      <section className="py-20 px-6 border-b bg-linear-to-b from-primary/5 to-transparent">
         <div className="max-w-5xl mx-auto text-center">
           <Badge variant="outline" className="mb-4">White-label</Badge>
           <h1 className="text-5xl md:text-6xl font-bold tracking-tight" style={{ fontFamily: "var(--font-display)" }}>

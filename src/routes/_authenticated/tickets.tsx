@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Ticket, Plus, Search, AlertTriangle, Loader2, Clock } from "lucide-react";
 import { toast } from "sonner";
-import { useActiveTenant } from "@/lib/tenants";
+import { useActiveTenant } from "@/lib/queries/tenants";
 import { useRealtimeTable } from "@/lib/use-realtime-table";
 
 export const Route = createFileRoute("/_authenticated/tickets")({

@@ -2,7 +2,7 @@ import { useAuth, type AppRole } from "@/hooks/use-auth";
 import { Loader2, ShieldOff } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { logAccessDenied, logAccessGranted } from "@/lib/audit";
-import { useActiveTenant } from "@/lib/tenants";
+import { useActiveTenant } from "@/lib/queries/tenants";
 
 const STAFF: AppRole[] = ["super_admin", "admin", "sales_manager", "sales_executive"];
 

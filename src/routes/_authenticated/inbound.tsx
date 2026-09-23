@@ -13,7 +13,7 @@ import { Webhook, Sheet, Facebook, Instagram, Copy, Plus, Loader2, Radio, Refres
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { syncSheetNowFn, exportToSheetFn } from "@/lib/sheets.functions";
-import { useActiveTenant, useTenantWebhookSecret } from "@/lib/tenants";
+import { useActiveTenant, useTenantWebhookSecret } from "@/lib/queries/tenants";
 import { FeatureGate } from "@/components/feature-gate";
 import { useAllPacks } from "@/lib/pack-config";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -39,12 +39,12 @@ function InboundPage() {
         </CardContent></Card>
       ) : (
         <>
-          <WebhookSection tenantId={active.id} tenantSlug={active.slug} />
+          <WebhookSection tenantId={active.id} tenantSlug={getTenantSlug(active)} />
           <FeatureGate feature="inbound.google_sheets">
             <SheetsSection tenantId={active.id} />
           </FeatureGate>
           <FeatureGate feature="inbound.facebook">
-            <MetaSection tenantId={active.id} tenantSlug={active.slug} />
+            <MetaSection tenantId={active.id} tenantSlug={getTenantSlug(active)} />
           </FeatureGate>
           <RecentIntakes tenantId={active.id} />
         </>
@@ -53,8 +53,12 @@ function InboundPage() {
   );
 }
 
-function WebhookSection({ tenantId, tenantSlug }: { tenantId: string; tenantSlug: string }) {
-  const { data: secret, isLoading } = useTenantWebhookSecret(tenantId);
+function getTenantSlug(tenant: { id: number } & { slug?: string }) {
+  return tenant.slug ?? String(tenant.id);
+}
+
+function WebhookSection({ tenantId, tenantSlug }: { tenantId: number; tenantSlug: string }) {
+  const { data: secret, isLoading } = useTenantWebhookSecret();
   const url = typeof window !== "undefined" ? `${window.location.origin}/api/public/inbound/leads/${tenantSlug}` : "";
   const displaySecret = secret ?? "";
   const example = secret ? `curl -X POST '${url}' \\
@@ -105,7 +109,7 @@ function WebhookSection({ tenantId, tenantSlug }: { tenantId: string; tenantSlug
 }
 
 
-function SheetsSection({ tenantId }: { tenantId: string }) {
+function SheetsSection({ tenantId }: { tenantId: number }) {
   const qc = useQueryClient();
   const syncNow = useServerFn(syncSheetNowFn);
   const exportSheet = useServerFn(exportToSheetFn);
@@ -204,7 +208,7 @@ function SheetsSection({ tenantId }: { tenantId: string }) {
                     <TableCell className="text-xs">
                       {packs.find((p) => p.group === c.group_slug && p.slug === c.pack_slug)?.name ?? "Leads only"}
                     </TableCell>
-                    <TableCell className="text-xs font-mono max-w-[220px] truncate">{c.spreadsheet_id}</TableCell>
+                    <TableCell className="text-xs font-mono max-w-55 truncate">{c.spreadsheet_id}</TableCell>
                     <TableCell className="text-xs">{c.range_a1}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{c.last_run_at ? new Date(c.last_run_at).toLocaleString() : "—"}</TableCell>
                     <TableCell><Badge variant={c.is_enabled ? "default" : "outline"}>{c.last_status ?? (c.is_enabled ? "Active" : "Paused")}</Badge></TableCell>
@@ -242,7 +246,7 @@ function SheetsSection({ tenantId }: { tenantId: string }) {
   );
 }
 
-function MetaSection({ tenantId, tenantSlug }: { tenantId: string; tenantSlug: string }) {
+function MetaSection({ tenantId, tenantSlug }: { tenantId: number; tenantSlug: string }) {
   const { data: secret } = useTenantWebhookSecret(tenantId);
   const { packs } = useAllPacks();
   const [packKey, setPackKey] = useState("");
@@ -303,7 +307,7 @@ function MetaSection({ tenantId, tenantSlug }: { tenantId: string; tenantSlug: s
 }
 
 
-function RecentIntakes({ tenantId }: { tenantId: string }) {
+function RecentIntakes({ tenantId }: { tenantId: number }) {
   const { data: logs = [] } = useQuery({
     queryKey: ["inbound-log", tenantId],
     queryFn: async () => {

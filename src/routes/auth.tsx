@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { lovable } from "@/integrations/lovable";
+// import { supabase } from "@/integrations/supabase/client";
+// import { lovable } from "@/integrations/lovable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,25 +21,25 @@ export const Route = createFileRoute("/auth")({
   component: AuthPage,
 });
 
-const DEMO_ACCOUNTS = [
-  { label: "Super Admin", email: "superadmin@digicrm.demo" },
-  { label: "Admin", email: "admin@digicrm.demo" },
-  { label: "Sales Manager", email: "manager@digicrm.demo" },
-  { label: "Sales Executive", email: "executive@digicrm.demo" },
-]
+// const DEMO_ACCOUNTS = [
+//   { label: "Super Admin", email: "superadmin@digicrm.demo" },
+//   { label: "Admin", email: "admin@digicrm.demo" },
+//   { label: "Sales Manager", email: "manager@digicrm.demo" },
+//   { label: "Sales Executive", email: "executive@digicrm.demo" },
+// ]
 
-const INDUSTRY_DEMOS = [
-  { label: "Financial Services", email: "finserv@digicrm.demo" },
-  { label: "Property", email: "property@digicrm.demo" },
-  { label: "Commerce", email: "commerce@digicrm.demo" },
-  { label: "Mobility & Supply Chain", email: "mobility@digicrm.demo" },
-  { label: "Healthcare", email: "healthcare@digicrm.demo" },
-  { label: "Education", email: "education@digicrm.demo" },
-  { label: "Industrial", email: "industrial@digicrm.demo" },
-  { label: "Professional Services", email: "services@digicrm.demo" },
-  { label: "Client portal", email: "client@digicrm.demo" },
-  { label: "Affiliate partner", email: "partner@digicrm.demo" },
-];
+// const INDUSTRY_DEMOS = [
+//   { label: "Financial Services", email: "finserv@digicrm.demo" },
+//   { label: "Property", email: "property@digicrm.demo" },
+//   { label: "Commerce", email: "commerce@digicrm.demo" },
+//   { label: "Mobility & Supply Chain", email: "mobility@digicrm.demo" },
+//   { label: "Healthcare", email: "healthcare@digicrm.demo" },
+//   { label: "Education", email: "education@digicrm.demo" },
+//   { label: "Industrial", email: "industrial@digicrm.demo" },
+//   { label: "Professional Services", email: "services@digicrm.demo" },
+//   { label: "Client portal", email: "client@digicrm.demo" },
+//   { label: "Affiliate partner", email: "partner@digicrm.demo" },
+// ];
 
 function passwordScore(pw: string): number {
   let s = 0;
@@ -56,10 +57,17 @@ function AuthPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
+  const [company_name, setCompany_name] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
 
- useEffect(() => {
+  // useEffect(() => {
+  //   supabase.auth.getSession().then(({ data }) => {
+  //     if (data.session) navigate({ to: "/dashboard" });
+  //   });
+  // }, [navigate]);
+
+  useEffect(() => {
   const token = localStorage.getItem("access_token");
 
   if (token) {
@@ -67,136 +75,180 @@ function AuthPage() {
   }
 }, [navigate]);
 
+  // const handleLogin = async (e: React.FormEvent) => {
+  //   e.preventDefault();
+  //   setLoading(true);
+  //   const { error } = await supabase.auth.signInWithPassword({ email, password });
+  //   setLoading(false);
+  //   if (error) return toast.error(error.message);
+  //   toast.success("Welcome back!");
+  //   navigate({ to: "/dashboard" });
+  // };
+
 const handleLogin = async (e: React.FormEvent) => {
   e.preventDefault();
   setLoading(true);
 
   try {
-    const response = await apiFetch("/api/auth/signin", {
+    const data = await apiFetch("/api/v1/auth/signin", {
       method: "POST",
       body: JSON.stringify({
-        email,
-        password,
+        email: email,
+        password: password,
       }),
     });
 
-    const data = await response.json();
+    // Save tokens
+    localStorage.setItem(
+      "access_token",
+      data.tokens.access_token
+    );
 
-    if (!response.ok) {
-      toast.error(data.detail || "Invalid email or password");
-      return;
-    }
+    localStorage.setItem(
+      "refresh_token",
+      data.tokens.refresh_token
+    );
 
-    // Store JWT tokens
-    localStorage.setItem("access_token", data.access_token);
-    localStorage.setItem("refresh_token", data.refresh_token);
-
-    // Optional: store user information
-    localStorage.setItem("user", JSON.stringify(data.user));
+    // Save user information
+    localStorage.setItem(
+      "user",
+      JSON.stringify(data.user)
+    );
 
     toast.success("Welcome back!");
 
+    // Redirect after successful login
     navigate({ to: "/dashboard" });
 
   } catch (error) {
-    console.error("Login error:", error);
-    toast.error("Unable to connect to server");
+    toast.error(
+      error instanceof Error
+        ? error.message
+        : "Login failed"
+    );
   } finally {
     setLoading(false);
   }
 };
+
+
+  // const handleSignup = async (e: React.FormEvent) => {
+  //   e.preventDefault();
+  //   setLoading(true);
+  //   const { error } = await supabase.auth.signUp({
+  //     email,
+  //     password,
+  //     options: {
+  //       emailRedirectTo: window.location.origin,
+  //       data: { full_name: fullName },
+  //     },
+  //   });
+  //   setLoading(false);
+  //   if (error) return toast.error(error.message);
+  //   toast.success("Account created! Check your email to verify.");
+  //   setMode("login");
+  // };
 
 const handleSignup = async (e: React.FormEvent) => {
   e.preventDefault();
   setLoading(true);
 
   try {
-    const response = await apiFetch("/api/auth/signup", {
+    const data = await apiFetch("/api/v1/auth/signup", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-        body: JSON.stringify({
-          full_name: fullName,
-          email,
-          password,
-          role: "executive",
-        }),
-      }
+      body: JSON.stringify({
+        full_name: fullName,
+        email: email,
+        password: password,
+        company_name: company_name,
+      }),
+    });
+
+    // Backend response:
+    // data.user
+    // data.tokens.access_token
+    // data.tokens.refresh_token
+
+    localStorage.setItem(
+      "access_token",
+      data.tokens.access_token
     );
 
-    const data = await response.json();
+    localStorage.setItem(
+      "refresh_token",
+      data.tokens.refresh_token
+    );
 
-    if (!response.ok) {
-      toast.error(data.detail || "Signup failed");
-      return;
-    }
+    localStorage.setItem(
+      "user",
+      JSON.stringify(data.user)
+    );
 
-    // Store tokens returned by backend
-    localStorage.setItem("access_token", data.access_token);
-    localStorage.setItem("refresh_token", data.refresh_token);
-    localStorage.setItem("user", JSON.stringify(data.user));
+    if (data.tenant) {
+  sessionStorage.setItem(
+    "signup_tenant",
+    JSON.stringify(data.tenant)
+  );}
 
-    toast.success("Account created successfully!");
-
-    navigate({ to: "/dashboard" });
-
-  } catch (error) {
-    console.error("Signup error:", error);
-    toast.error("Unable to connect to server");
+  navigate({ to: "/dashboard" });
+} catch (error) {
+    toast.error(
+      error instanceof Error
+        ? error.message
+        : "Signup failed"
+    );
   } finally {
     setLoading(false);
   }
 };
+
+  // const handleForgot = async (e: React.FormEvent) => {
+  //   e.preventDefault();
+  //   setLoading(true);
+  //   const { error } = await supabase.auth.resetPasswordForEmail(email, {
+  //     redirectTo: `${window.location.origin}/reset-password`,
+  //   });
+  //   setLoading(false);
+  //   if (error) return toast.error(error.message);
+  //   toast.success("Password reset email sent.");
+  //   setMode("login");
+  // };
 
 const handleForgot = async (e: React.FormEvent) => {
   e.preventDefault();
   setLoading(true);
 
   try {
-    const response = await apiFetch("/api/auth/forgot-password", {
+    const message = await apiFetch("/api/v1/auth/forgot-password", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-        body: JSON.stringify({
-          email,
-        }),
-      }
+      body: JSON.stringify({
+        email,
+      }),
+    });
+
+    toast.success(
+      typeof message === "string"
+        ? message
+        : "Password reset email sent."
     );
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      toast.error(data.detail || "Something went wrong");
-      return;
-    }
-
-    toast.success("Password reset link sent.");
-
     setMode("login");
-
   } catch (error) {
-    console.error("Forgot password error:", error);
-    toast.error("Unable to connect to server");
+    toast.error(
+      error instanceof Error
+        ? error.message
+        : "Password reset failed"
+    );
   } finally {
     setLoading(false);
   }
 };
 
-  const handleGoogle = async () => {
-    setLoading(true);
-    const result = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
-    });
-    if (result.error) {
-      setLoading(false);
-      toast.error("Google sign-in failed");
-      return;
-    }
-    if (result.redirected) return;
-    navigate({ to: "/dashboard" });
-  };
+//  const handleGoogle = () => {
+//   setLoading(true);
+//   const redirectUri = `${window.location.origin}/auth/callback`;
+//   window.location.href = `/api/auth/google/login?redirect_uri=${encodeURIComponent(redirectUri)}`;
+// };
 
   const score = passwordScore(password);
   const scoreColors = ["bg-destructive", "bg-destructive", "bg-warning", "bg-warning", "bg-success", "bg-success"];
@@ -213,11 +265,11 @@ const handleForgot = async (e: React.FormEvent) => {
             </div>
             <span className="font-bold text-sm" style={{ fontFamily: "var(--font-display)" }}>DigiCRM AI</span>
           </Link>
-          <nav className="flex items-center gap-5 text-sm">
+          {/* <nav className="flex items-center gap-5 text-sm">
             <Link to="/features" className="text-muted-foreground hover:text-foreground hidden sm:inline">Features</Link>
             <Link to="/pricing" className="text-muted-foreground hover:text-foreground hidden sm:inline">Pricing</Link>
             <Link to="/contact" className="text-muted-foreground hover:text-foreground">Contact</Link>
-          </nav>
+          </nav> */}
         </div>
       </header>
       <div className="flex-1 grid lg:grid-cols-2">
@@ -315,6 +367,15 @@ const handleForgot = async (e: React.FormEvent) => {
                       <Input id="name" required value={fullName} onChange={(e) => setFullName(e.target.value)} />
                     </div>
                     <div className="space-y-2">
+                        <Label htmlFor="company">Company name</Label>
+                        <Input
+                          id="company"
+                          required
+                          value={company_name}
+                          onChange={(e) => setCompany_name(e.target.value)}
+                        />
+                    </div>
+                    <div className="space-y-2">
                       <Label htmlFor="email2">Email</Label>
                       <Input id="email2" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
                     </div>
@@ -340,7 +401,7 @@ const handleForgot = async (e: React.FormEvent) => {
               </Tabs>
             )}
 
-            {mode !== "forgot" && (
+            {/* {mode !== "forgot" && (
               <div className="mt-6 rounded-lg border bg-muted/30 p-3">
                 <p className="text-xs font-medium mb-2">Demo accounts (password: DigiCRM@2025)</p>
                 <div className="grid gap-1">
@@ -370,17 +431,17 @@ const handleForgot = async (e: React.FormEvent) => {
                   ))}
                 </div>
               </div>
-            )}
+            )} */}
 
             {mode !== "forgot" && (
               <>
-                <div className="relative my-6">
+                {/* <div className="relative my-6">
                   <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
                   <div className="relative flex justify-center text-xs uppercase">
                     <span className="bg-card px-2 text-muted-foreground">or</span>
                   </div>
-                </div>
-                <Button type="button" variant="outline" className="w-full" onClick={handleGoogle} disabled={loading}>
+                </div> */}
+                {/* <Button type="button" variant="outline" className="w-full" onClick={handleGoogle} disabled={loading}>
                   <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">
                     <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
                     <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
@@ -388,7 +449,7 @@ const handleForgot = async (e: React.FormEvent) => {
                     <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
                   </svg>
                   Continue with Google
-                </Button>
+                </Button> */}
               </>
             )}
           </CardContent>
@@ -399,13 +460,17 @@ const handleForgot = async (e: React.FormEvent) => {
       <footer className="border-t bg-muted/30 py-4">
         <div className="max-w-7xl mx-auto px-6 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           <div>© {new Date().getFullYear()} DigiCRM AI. All rights reserved.</div>
-          <div className="flex gap-4">
+          {/* <div className="flex gap-4">
             <Link to="/about" className="hover:text-foreground">About</Link>
             <Link to="/blog" className="hover:text-foreground">Blog</Link>
             <Link to="/affiliate" className="hover:text-foreground">Affiliates</Link>
-          </div>
+          </div> */}
         </div>
       </footer>
     </div>
   );
 }
+function login(user: any) {
+  throw new Error("Function not implemented.");
+}
+

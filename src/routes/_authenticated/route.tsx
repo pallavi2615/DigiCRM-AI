@@ -1,5 +1,4 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
-import { supabase } from "@/integrations/supabase/client";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AppTopbar } from "@/components/app-topbar";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
@@ -8,24 +7,18 @@ export const Route = createFileRoute("/_authenticated")({
   ssr: false,
   beforeLoad: async () => {
     const token = localStorage.getItem("access_token");
+    const rawUser = localStorage.getItem("user");
 
-    if (!token) {
-      throw redirect({
-        to: "/auth",
-        search: { redirect: location.href },
-      });
+    if (!token || !rawUser) {
+      throw redirect({ to: "/auth" });
     }
 
-    // Optional: Yahan token ko verify karne ke liye backend call kar sakte hain
-    // const res = await fetch("http://127.0.0.1:8000/api/auth/me", {
-    //   headers: { Authorization: `Bearer ${token}` }
-    // });
-    // if (!res.ok) {
-    //   localStorage.clear();
-    //   throw redirect({ to: "/auth" });
-    // }
-
-    return { token }; // context mein token available ho gaya
+    try {
+      const user = JSON.parse(rawUser);
+      return { user };
+    } catch {
+      throw redirect({ to: "/auth" });
+    }
   },
   component: AuthenticatedLayout,
 });

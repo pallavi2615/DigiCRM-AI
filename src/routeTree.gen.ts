@@ -62,6 +62,7 @@ import { Route as AuthenticatedLandingConversionsRouteImport } from './routes/_a
 import { Route as AuthenticatedLandingAnalyticsRouteImport } from './routes/_authenticated/landing-analytics'
 import { Route as AuthenticatedItRouteImport } from './routes/_authenticated/it'
 import { Route as AuthenticatedInboundRouteImport } from './routes/_authenticated/inbound'
+import { Route as AuthenticatedFollowupsRouteImport } from './routes/_authenticated/followups'
 import { Route as AuthenticatedFintechRouteImport } from './routes/_authenticated/fintech'
 import { Route as AuthenticatedFeatureMatrixRouteImport } from './routes/_authenticated/feature-matrix'
 import { Route as AuthenticatedDigiverifyRouteImport } from './routes/_authenticated/digiverify'
@@ -386,6 +387,11 @@ const AuthenticatedInboundRoute = AuthenticatedInboundRouteImport.update({
   path: '/inbound',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedFollowupsRoute = AuthenticatedFollowupsRouteImport.update({
+  id: '/followups',
+  path: '/followups',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedFintechRoute = AuthenticatedFintechRouteImport.update({
   id: '/fintech',
   path: '/fintech',
@@ -657,6 +663,7 @@ export interface FileRoutesByFullPath {
   '/digiverify': typeof AuthenticatedDigiverifyRoute
   '/feature-matrix': typeof AuthenticatedFeatureMatrixRoute
   '/fintech': typeof AuthenticatedFintechRouteWithChildren
+  '/followups': typeof AuthenticatedFollowupsRoute
   '/inbound': typeof AuthenticatedInboundRoute
   '/it': typeof AuthenticatedItRouteWithChildren
   '/landing-analytics': typeof AuthenticatedLandingAnalyticsRoute
@@ -752,6 +759,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/digiverify': typeof AuthenticatedDigiverifyRoute
   '/feature-matrix': typeof AuthenticatedFeatureMatrixRoute
+  '/followups': typeof AuthenticatedFollowupsRoute
   '/inbound': typeof AuthenticatedInboundRoute
   '/landing-analytics': typeof AuthenticatedLandingAnalyticsRoute
   '/landing-conversions': typeof AuthenticatedLandingConversionsRoute
@@ -847,6 +855,7 @@ export interface FileRoutesById {
   '/_authenticated/digiverify': typeof AuthenticatedDigiverifyRoute
   '/_authenticated/feature-matrix': typeof AuthenticatedFeatureMatrixRoute
   '/_authenticated/fintech': typeof AuthenticatedFintechRouteWithChildren
+  '/_authenticated/followups': typeof AuthenticatedFollowupsRoute
   '/_authenticated/inbound': typeof AuthenticatedInboundRoute
   '/_authenticated/it': typeof AuthenticatedItRouteWithChildren
   '/_authenticated/landing-analytics': typeof AuthenticatedLandingAnalyticsRoute
@@ -947,6 +956,7 @@ export interface FileRouteTypes {
     | '/digiverify'
     | '/feature-matrix'
     | '/fintech'
+    | '/followups'
     | '/inbound'
     | '/it'
     | '/landing-analytics'
@@ -1042,6 +1052,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/digiverify'
     | '/feature-matrix'
+    | '/followups'
     | '/inbound'
     | '/landing-analytics'
     | '/landing-conversions'
@@ -1136,6 +1147,7 @@ export interface FileRouteTypes {
     | '/_authenticated/digiverify'
     | '/_authenticated/feature-matrix'
     | '/_authenticated/fintech'
+    | '/_authenticated/followups'
     | '/_authenticated/inbound'
     | '/_authenticated/it'
     | '/_authenticated/landing-analytics'
@@ -1607,6 +1619,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedInboundRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/followups': {
+      id: '/_authenticated/followups'
+      path: '/followups'
+      fullPath: '/followups'
+      preLoaderRoute: typeof AuthenticatedFollowupsRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/fintech': {
       id: '/_authenticated/fintech'
       path: '/fintech'
@@ -2030,6 +2049,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedDigiverifyRoute: typeof AuthenticatedDigiverifyRoute
   AuthenticatedFeatureMatrixRoute: typeof AuthenticatedFeatureMatrixRoute
   AuthenticatedFintechRoute: typeof AuthenticatedFintechRouteWithChildren
+  AuthenticatedFollowupsRoute: typeof AuthenticatedFollowupsRoute
   AuthenticatedInboundRoute: typeof AuthenticatedInboundRoute
   AuthenticatedItRoute: typeof AuthenticatedItRouteWithChildren
   AuthenticatedLandingAnalyticsRoute: typeof AuthenticatedLandingAnalyticsRoute
@@ -2081,6 +2101,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedDigiverifyRoute: AuthenticatedDigiverifyRoute,
   AuthenticatedFeatureMatrixRoute: AuthenticatedFeatureMatrixRoute,
   AuthenticatedFintechRoute: AuthenticatedFintechRouteWithChildren,
+  AuthenticatedFollowupsRoute: AuthenticatedFollowupsRoute,
   AuthenticatedInboundRoute: AuthenticatedInboundRoute,
   AuthenticatedItRoute: AuthenticatedItRouteWithChildren,
   AuthenticatedLandingAnalyticsRoute: AuthenticatedLandingAnalyticsRoute,

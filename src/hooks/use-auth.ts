@@ -1,72 +1,71 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import type { Session, User } from "@supabase/supabase-js";
 
 export type AppRole = "super_admin" | "admin" | "sales_manager" | "sales_executive";
 
+interface StoredUser {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  role?: AppRole;
+  roles?: AppRole[];
+}
+
 export interface AuthState {
-  session: Session | null;
-  user: User | null;
+  user: StoredUser | null;
   roles: AppRole[];
   loading: boolean;
+}
+
+function readAuthFromStorage(): { user: StoredUser | null; roles: AppRole[] } {
+  try {
+    const token = localStorage.getItem("access_token");
+    const raw = localStorage.getItem("user");
+    if (!token || !raw) return { user: null, roles: [] };
+
+    const user = JSON.parse(raw) as StoredUser;
+    const roles = user.roles ?? (user.role ? [user.role] : []);
+    return { user, roles };
+  } catch {
+    return { user: null, roles: [] };
+  }
 }
 
 export function useAuth(): AuthState & {
   isAdmin: boolean;
   isManager: boolean;
   hasRole: (r: AppRole) => boolean;
+  logout: () => void;
 } {
-  const [state, setState] = useState<AuthState>({
-    session: null,
-    user: null,
-    roles: [],
-    loading: true,
-  });
+  const [state, setState] = useState<AuthState>({ user: null, roles: [], loading: true });
 
   useEffect(() => {
-    let mounted = true;
+    setState({ ...readAuthFromStorage(), loading: false });
 
-    const loadRoles = async (userId: string): Promise<AppRole[]> => {
-      const { data } = await supabase.from("user_roles").select("role").eq("user_id", userId);
-      return (data?.map((r) => r.role as AppRole) ?? []);
-    };
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!mounted) return;
-      setState((s) => ({ ...s, session, user: session?.user ?? null }));
-      if (session?.user) {
-        setTimeout(async () => {
-          const roles = await loadRoles(session.user.id);
-          if (mounted) setState((s) => ({ ...s, roles, loading: false }));
-        }, 0);
-      } else {
-        setState((s) => ({ ...s, roles: [], loading: false }));
+    // Keep in sync if another tab logs in/out
+    function onStorage(e: StorageEvent) {
+      if (e.key === "access_token" || e.key === "user") {
+        setState({ ...readAuthFromStorage(), loading: false });
       }
-    });
-
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!mounted) return;
-      if (session?.user) {
-        const roles = await loadRoles(session.user.id);
-        if (mounted) setState({ session, user: session.user, roles, loading: false });
-      } else {
-        setState({ session: null, user: null, roles: [], loading: false });
-      }
-    });
-
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-    };
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const isAdmin = state.roles.includes("super_admin") || state.roles.includes("admin");
   const isManager = isAdmin || state.roles.includes("sales_manager");
+
+  function logout() {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    localStorage.removeItem("user");
+    setState({ user: null, roles: [], loading: false });
+  }
 
   return {
     ...state,
     isAdmin,
     isManager,
     hasRole: (r) => state.roles.includes(r),
+    logout,
   };
 }

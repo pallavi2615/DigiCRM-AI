@@ -10,8 +10,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Progress } from "@/components/ui/progress";
 import { Inbox, Users, TrendingUp, Target, IndianRupee, Handshake, FileText } from "lucide-react";
 
-import { HealthcareDashboard } from "@/components/healthcare/health-dashboard";
-
 export const Route = createFileRoute("/_authenticated/industry/$slug/")({
   head: ({ params }) => {
     const preset = getIndustry(params.slug);
@@ -31,9 +29,6 @@ export const Route = createFileRoute("/_authenticated/industry/$slug/")({
 
 function IndustryOverview() {
   const { slug } = Route.useParams();
-   if (slug === "healthcare") {
-    return <HealthcareDashboard />;
-  }
   const preset = getIndustry(slug)!;
 
   const { data, isLoading, isError } = useQuery({

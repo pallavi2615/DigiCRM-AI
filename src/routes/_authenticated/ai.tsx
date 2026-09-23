@@ -21,7 +21,7 @@ import { notifyPermissionDenied } from "@/components/permission-denied";
 import { INDUSTRIES } from "@/lib/industries";
 import { INDUSTRY_PACKS } from "@/lib/industry-packs";
 import { useIndustryAccess } from "@/lib/industry-access";
-import { useActiveTenant } from "@/lib/tenants";
+import { useActiveTenant } from "@/lib/queries/tenants";
 import { useTenantPackKey } from "@/lib/pack-config";
 
 import { convertProposalToDeal, proposalStageToDealStage } from "@/lib/proposal-deal";

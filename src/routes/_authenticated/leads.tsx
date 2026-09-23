@@ -1,465 +1,1237 @@
-import { usePermissions } from "@/hooks/use-permissions";
-import { useRealtimeTable } from "@/lib/use-realtime-table";
-import { useServerFn } from "@tanstack/react-start";
-import { useSearch } from "@tanstack/react-router";
-import { deleteRecord } from "@/lib/rbac.functions";
-import { notifyPermissionDenied } from "@/components/permission-denied";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
-import { useActiveIndustry, scopeToIndustry } from "@/lib/active-industry";
-import { useEffect, useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { useRef, useState } from "react";
+import { apiFetch, apiUpload, apiDownload } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger,
-} from "@/components/ui/dialog";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+  Dialog, DialogContent, DialogDescription, DialogFooter,
+  DialogHeader, DialogTitle, DialogTrigger,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Plus, Search, MoreVertical, Trash2, Pencil, Download, Upload, Loader2, Users } from "lucide-react";
-import { CsvImportDialog } from "@/components/csv-import-dialog";
-import { downloadCsv, objectsToCsv } from "@/lib/csv";
-
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import {
+  Loader2, Users, RefreshCw, Plus, Trash2, Upload, Download,
+  MoreVertical, Link2,
+} from "lucide-react";
 import { toast } from "sonner";
-import { useAuth } from "@/hooks/use-auth";
-import { escapePostgrestFilterValue } from "@/lib/utils";
-import { DatePicker, DateTimePicker } from "@/components/ui/datetime-picker";
-const validateDate = (d: string) => {
-  // 1. Khali check
-  if (!d || d.trim() === "") {
-    throw new Error("Date is required");
-  }
-
-  // 2. Valid date check
-  const date = new Date(d);
-  if (isNaN(date.getTime())) {
-    throw new Error("Invalid date format");
-  }
-
-  // 3. Year range check (1900-2100)
-  const year = date.getFullYear();
-  if (year < 1900 || year > 2100) {
-    throw new Error(`Year must be between 1900 and 2100 (got: ${year})`);
-  }
-
-  // 4. Sahi ISO string return karo
-  return date.toISOString();
-};
 
 export const Route = createFileRoute("/_authenticated/leads")({
   head: () => ({ meta: [{ title: "Leads — DigiCRM AI" }] }),
   component: LeadsPage,
 });
 
-type LeadStatus = "new" | "contacted" | "qualified" | "proposal_sent" | "negotiation" | "won" | "lost";
-type LeadPriority = "low" | "medium" | "high" | "urgent";
-
+// ============ TYPES ============
 interface Lead {
-  id: string;
-  company_name: string;
-  contact_person: string | null;
+  id: number;
+  tenant_id: number;
+  name: string | null;
   email: string | null;
   phone: string | null;
-  industry: string | null;
-  source: string | null;
-  status: LeadStatus;
-  priority: LeadPriority;
-  estimated_value: number | null;
-  expected_close_date: string | null;
-  assigned_to: string | null;
+  company: string | null;
+  message: string | null;
+  source: string;
+  status: string;
+  priority: string;
+  value: number;
+  assigned_to: number | null;
+  score: number;
+  custom_fields: Record<string, any>;
   created_at: string;
+  updated_at: string;
 }
 
-const statusColors: Record<LeadStatus, string> = {
-  new: "bg-muted text-muted-foreground",
-  contacted: "bg-info/15 text-info",
-  qualified: "bg-primary/15 text-primary",
-  proposal_sent: "bg-warning/15 text-warning",
-  negotiation: "bg-accent-foreground/15 text-accent-foreground",
-  won: "bg-success/15 text-success",
-  lost: "bg-destructive/15 text-destructive",
+type LeadsResponse = Lead[];
+
+interface Tenant {
+  id: number;
+  name?: string;
+  company_name?: string;
+}
+
+interface LeadStats {
+  total: number;
+  new: number;
+  contacted: number;
+  qualified: number;
+  proposal_sent?: number;
+  won: number;
+  lost: number;
+}
+
+interface CreateLeadPayload {
+  name: string;
+  email: string;
+  phone: string;
+  company: string;
+  message: string;
+  source: string;
+  priority: string;
+  value: number;
+}
+
+interface UpdateLeadPayload {
+  name: string;
+  email: string;
+  phone: string;
+  company: string;
+  message: string;
+  status: string;
+  priority: string;
+  value: number;
+}
+
+interface ImportLeadsResult {
+  total_rows: number;
+  imported: number;
+  failed: number;
+  errors: string[];
+}
+
+const PAGE_SIZE = 20;
+
+const statusColors: Record<string, string> = {
+  new: "bg-blue-100 text-blue-700",
+  contacted: "bg-yellow-100 text-yellow-700",
+  qualified: "bg-purple-100 text-purple-700",
+  proposal_sent: "bg-indigo-100 text-indigo-700",
+  won: "bg-green-100 text-green-700",
+  lost: "bg-red-100 text-red-700",
 };
 
-const priorityColors: Record<LeadPriority, string> = {
-  low: "bg-muted text-muted-foreground",
-  medium: "bg-info/15 text-info",
-  high: "bg-warning/15 text-warning",
-  urgent: "bg-destructive/15 text-destructive",
+const priorityColors: Record<string, string> = {
+  low: "bg-slate-100 text-slate-700",
+  medium: "bg-amber-100 text-amber-700",
+  high: "bg-orange-100 text-orange-700",
+  urgent: "bg-red-100 text-red-700",
 };
 
-const emptyForm = {
-  company_name: "", contact_person: "", designation: "", email: "", phone: "",
-  website: "", industry: "", country: "", city: "", source: "",
-  status: "new" as LeadStatus, priority: "medium" as LeadPriority,
-  estimated_value: 0, expected_close_date: "", notes: "",
+const emptyForm: CreateLeadPayload = {
+  name: "",
+  email: "",
+  phone: "",
+  company: "",
+  message: "",
+  source: "manual",
+  priority: "medium",
+  value: 0,
 };
 
-function LeadsPage() {
-  const urlSearch = useSearch({ from: "/_authenticated/leads" });
+function toUpdatePayload(lead: Lead): UpdateLeadPayload {
+  return {
+    name: lead.name ?? "",
+    email: lead.email ?? "",
+    phone: lead.phone ?? "",
+    company: lead.company ?? "",
+    message: lead.message ?? "",
+    status: lead.status ?? "new",
+    priority: lead.priority ?? "medium",
+    value: lead.value ?? 0,
+  };
+}
 
-const statusFromUrl = (urlSearch as { status?: string }).status;
+const tenantLabel = (t: Tenant) =>
+  t.name ?? t.company_name ?? `Tenant #${t.id}`;
 
-const industryGroupFromUrl = (
-  urlSearch as { industry_group?: string }
-).industry_group;
-  const perms = usePermissions();
-  const canCreate = perms.canCreate("leads");
-  const canEdit = perms.canEdit("leads");
-  const canDelete = perms.canDelete("leads");
-  const qc = useQueryClient();
-  const deleteRecordFn = useServerFn(deleteRecord);
-  useRealtimeTable("leads", [["leads"], ["kpi"], ["pipeline-deals"]]);
-  const { user } = useAuth();
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>(statusFromUrl ?? "all");
-  const [priorityFilter, setPriorityFilter] = useState<string>("all");
-  const [page, setPage] = useState(0);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
-  const [editing, setEditing] = useState<Lead | null>(null);
-  const [form, setForm] = useState(emptyForm);
-  const pageSize = 15;
-  const { group: crmGroup } = useActiveIndustry();
-
-  useEffect(() => {
-    if (statusFromUrl && statusFromUrl !== statusFilter) {
-      setStatusFilter(statusFromUrl);
-      setPage(0);
-    }
-  }, [statusFromUrl]);
-
-  const { data: leads, isLoading } = useQuery({
-  queryKey: [
-    "leads",
-    search,
-    statusFilter,
-    priorityFilter,
-    page,
-    industryGroupFromUrl ?? "all",
-  ],
-
-  queryFn: async () => {
-    let q = supabase
-      .from("leads")
-      .select("*", { count: "exact" })
-      .is("deleted_at", null)
-      .order("created_at", { ascending: false })
-      .range(
-        page * pageSize,
-        page * pageSize + pageSize - 1
-      );
-
-    // Apply CRM filter only when a CRM was selected
-    if (industryGroupFromUrl) {
-      q = q.eq("industry_group", industryGroupFromUrl);
-    }
-
-    if (search) {
-      q = q.or(
-        `company_name.ilike.%${escapePostgrestFilterValue(search)}%,contact_person.ilike.%${escapePostgrestFilterValue(search)}%,email.ilike.%${escapePostgrestFilterValue(search)}%`
-      );
-    }
-
-    if (statusFilter !== "all") {
-      q = q.eq("status", statusFilter as LeadStatus);
-    }
-
-    if (priorityFilter !== "all") {
-      q = q.eq("priority", priorityFilter as LeadPriority);
-    }
-
-    const { data, count, error } = await q;
-
-    if (error) throw error;
-
-    return {
-      rows: (data ?? []) as Lead[],
-      count: count ?? 0,
-    };
-  },
+const currencyFormatter = new Intl.NumberFormat("en-IN", {
+  style: "currency",
+  currency: "INR",
+  maximumFractionDigits: 0,
 });
 
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      if (!form.company_name.trim()) throw new Error("Company name is required");
-      const payload = {
-        ...form,
-        estimated_value: Number(form.estimated_value) || 0,
-        expected_close_date: form.expected_close_date || null,
-        created_by: user?.id,
-        ...(editing ? {} : { industry_group: crmGroup }),
-      };
-      if (editing) {
-        const { error } = await supabase.from("leads").update(payload).eq("id", editing.id);
-        if (error) throw error;
-      } else {
-        // Dup check
-        if (form.email) {
-          const { data: dup } = await supabase.from("leads").select("id").eq("email", form.email).is("deleted_at", null).limit(1);
-          if (dup && dup.length > 0) throw new Error("A lead with this email already exists");
-        }
-        const { error } = await supabase.from("leads").insert(payload);
-        if (error) throw error;
+// ============ COMPONENT ============
+function LeadsPage() {
+  const qc = useQueryClient();
+
+  const { hasRole, loading: authLoading } = useAuth();
+  const isSuperadmin = hasRole("super_admin");
+  const canWrite = !isSuperadmin;
+
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [priorityFilter, setPriorityFilter] = useState("all");
+  const [tenantFilter, setTenantFilter] = useState("all");
+  const [page, setPage] = useState(0);
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [form, setForm] = useState<CreateLeadPayload>(emptyForm);
+
+  const [editingLead, setEditingLead] = useState<Lead | null>(null);
+  const [editForm, setEditForm] = useState<UpdateLeadPayload | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+
+  // -------- ⭐ Attach Follow-up State --------
+  const [attachFor, setAttachFor] = useState<Lead | null>(null);
+  const [attachSequenceId, setAttachSequenceId] = useState<number | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importResultOpen, setImportResultOpen] = useState(false);
+  const [importResult, setImportResult] = useState<ImportLeadsResult | null>(null);
+
+  // -------- Leads List --------
+  const {
+    data: leads,
+    isLoading,
+    isFetching,
+    error,
+  } = useQuery({
+    queryKey: ["leads", isSuperadmin, search, statusFilter, tenantFilter, page],
+    enabled: !authLoading,
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (search) params.append("search", search);
+      if (statusFilter !== "all") params.append("status", statusFilter);
+      if (isSuperadmin && tenantFilter !== "all") {
+        params.append("tenant_id", tenantFilter);
       }
+      params.append("limit", String(PAGE_SIZE));
+      params.append("offset", String(page * PAGE_SIZE));
+
+      const base = isSuperadmin ? "/api/v1/superadmin/leads" : "/api/v1/leads";
+      return apiFetch<LeadsResponse>(`${base}?${params.toString()}`);
     },
-    onSuccess: () => {
-      toast.success(editing ? "Lead updated" : "Lead created");
-      qc.invalidateQueries({ queryKey: ["leads"] });
-      qc.invalidateQueries({ queryKey: ["kpi"] });
-      setDialogOpen(false); setEditing(null); setForm(emptyForm);
-    },
-    onError: (e: Error) => toast.error(e.message),
   });
 
-  const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      await deleteRecordFn({ data: { module: "leads", id } });
+  // -------- ⭐ Follow-up Sequences --------
+  const { data: sequences } = useQuery({
+    queryKey: ["followup-sequences"],
+    queryFn: () => apiFetch<any[]>("/api/v1/followups/sequences"),
+    enabled: !!attachFor,
+  });
+
+  // -------- Stats --------
+  const { data: stats } = useQuery({
+    queryKey: ["leads", "stats"],
+    queryFn: () => apiFetch<LeadStats>("/api/v1/leads/stats"),
+    enabled: !authLoading && !isSuperadmin,
+  });
+
+  // -------- Tenants --------
+  const { data: tenants } = useQuery({
+    queryKey: ["superadmin", "clients"],
+    queryFn: async () => {
+      const res = await apiFetch<Tenant[] | { items: Tenant[] }>(
+        "/api/v1/superadmin/clients"
+      );
+      return Array.isArray(res) ? res : res.items ?? [];
     },
+    enabled: isSuperadmin,
+  });
+
+  // -------- Create Lead --------
+  const createLead = useMutation({
+    mutationFn: (payload: CreateLeadPayload) =>
+      apiFetch<Lead>("/api/v1/leads", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: () => {
+      toast.success("Lead created");
+      setForm(emptyForm);
+      setCreateOpen(false);
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
+      qc.invalidateQueries({ queryKey: ["kpi"] });
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to create lead");
+    },
+  });
+
+  const handleCreateSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.name.trim() && !form.email.trim() && !form.phone.trim()) {
+      toast.error("Add at least a name, email, or phone");
+      return;
+    }
+    createLead.mutate(form);
+  };
+
+  // -------- Update Lead --------
+  const updateLead = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: UpdateLeadPayload }) =>
+      apiFetch<Lead>(`/api/v1/leads/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: () => {
+      toast.success("Lead updated");
+      setEditingLead(null);
+      setEditForm(null);
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
+      qc.invalidateQueries({ queryKey: ["kpi"] });
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to update lead");
+    },
+  });
+
+  // -------- Delete Lead --------
+  const deleteLead = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ message: string }>(`/api/v1/leads/${id}`, {
+        method: "DELETE",
+      }),
     onSuccess: () => {
       toast.success("Lead deleted");
+      setDeleteConfirmOpen(false);
+      setEditingLead(null);
+      setEditForm(null);
       qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
+      qc.invalidateQueries({ queryKey: ["kpi"] });
     },
-    onError: (e: Error) => notifyPermissionDenied(e),
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to delete lead");
+    },
   });
 
-  const openEdit = (l: Lead) => {
-    setEditing(l);
-    setForm({
-      ...emptyForm,
-      company_name: l.company_name, contact_person: l.contact_person ?? "",
-      email: l.email ?? "", phone: l.phone ?? "", industry: l.industry ?? "",
-      source: l.source ?? "", status: l.status, priority: l.priority,
-      estimated_value: Number(l.estimated_value ?? 0),
-      expected_close_date: l.expected_close_date ?? "",
-    });
-    setDialogOpen(true);
+  // -------- Import Leads --------
+  const importLeads = useMutation({
+    mutationFn: (file: File) => {
+      const formData = new FormData();
+      formData.append("file", file);
+      return apiUpload<ImportLeadsResult>("/api/v1/leads/import", formData);
+    },
+    onSuccess: (result) => {
+      setImportResult(result);
+      setImportResultOpen(true);
+      qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
+      qc.invalidateQueries({ queryKey: ["kpi"] });
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to import leads");
+    },
+  });
+
+  // -------- Export Leads --------
+  const exportLeads = useMutation({
+    mutationFn: () => {
+      const params = new URLSearchParams();
+      if (statusFilter !== "all") params.append("status", statusFilter);
+      const query = params.toString();
+      const filename = `leads-export-${new Date().toISOString().slice(0, 10)}.csv`;
+      return apiDownload(`/api/v1/leads/export${query ? `?${query}` : ""}`, filename);
+    },
+    onSuccess: () => {
+      toast.success("Export downloaded");
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to export leads");
+    },
+  });
+
+  // -------- ⭐ Attach Follow-up --------
+  const attachSequence = useMutation({
+    mutationFn: ({ leadId, sequenceId }: { leadId: number; sequenceId: number }) =>
+      apiFetch<any>(`/api/v1/followups/leads/${leadId}/attach-sequence`, {
+        method: "POST",
+        body: JSON.stringify({ sequence_id: sequenceId }),
+      }),
+    onSuccess: (data: any) => {
+      toast.success(`${data.tasks_created ?? 0} follow-up tasks created`);
+      setAttachFor(null);
+      setAttachSequenceId(null);
+      qc.invalidateQueries({ queryKey: ["followup-tasks"] });
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to attach sequence");
+    },
+  });
+
+  const openEditDialog = (lead: Lead) => {
+    if (!canWrite) return;
+    setEditingLead(lead);
+    setEditForm(toUpdatePayload(lead));
   };
 
-  const openNew = () => {
-    setEditing(null);
-    setForm(emptyForm);
-    setDialogOpen(true);
+  const closeEditDialog = () => {
+    setEditingLead(null);
+    setEditForm(null);
   };
 
-  const exportCsv = () => {
-    if (!leads?.rows.length) return toast.error("Nothing to export");
-    const headers = ["company_name","contact_person","email","phone","industry","source","status","priority","estimated_value","expected_close_date"];
-    const rows = leads.rows.map(l => ({
-      company_name: l.company_name, contact_person: l.contact_person ?? "", email: l.email ?? "",
-      phone: l.phone ?? "", industry: l.industry ?? "", source: l.source ?? "",
-      status: l.status, priority: l.priority, estimated_value: l.estimated_value ?? 0,
-      expected_close_date: l.expected_close_date ?? "",
-    }));
-    downloadCsv("leads.csv", objectsToCsv(rows as never, headers));
-    toast.success(`Exported ${rows.length} leads`);
+  const handleUpdateSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canWrite || !editingLead || !editForm) return;
+    updateLead.mutate({ id: editingLead.id, payload: editForm });
   };
 
+  const handleDeleteConfirmed = () => {
+    if (!canWrite || !editingLead) return;
+    deleteLead.mutate(editingLead.id);
+  };
 
-  const totalPages = Math.ceil((leads?.count ?? 0) / pageSize);
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    importLeads.mutate(file);
+    e.target.value = "";
+  };
+
+  const items = leads ?? [];
+
+  const filteredItems =
+    priorityFilter === "all"
+      ? items
+      : items.filter((lead) => lead.priority === priorityFilter);
+
+  const total = isSuperadmin ? items.length : stats?.total ?? items.length;
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+
+  const colCount = isSuperadmin ? 9 : 8;   // ⭐ +1 for Actions column
+  const showLoading = isLoading || authLoading;
+
+  const handleRefresh = () => {
+    qc.invalidateQueries({ queryKey: ["leads"] });
+    if (isSuperadmin) qc.invalidateQueries({ queryKey: ["superadmin"] });
+    toast.success("Refreshed");
+  };
 
   return (
     <div className="space-y-5">
+      {/* Header */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold capitalize">
-            {statusFilter !== "all" 
-              ? `${statusFilter.replace("_", " ")} Leads` 
-              : "Leads"}
-          </h1>
+          <h1 className="text-3xl font-bold">Leads</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            {leads?.count ?? 0} leads · Track and convert your pipeline.
+            {total} leads · Track and convert your pipeline.
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
-            <Upload className="mr-2 h-4 w-4" /> Import
+        <div className="flex gap-2 flex-wrap">
+          <Button variant="outline" size="sm" onClick={handleRefresh}>
+            <RefreshCw
+              className={`mr-2 h-4 w-4 ${isFetching ? "animate-spin" : ""}`}
+            />
+            Refresh
           </Button>
-          <Button variant="outline" size="sm" onClick={exportCsv}>
-            <Download className="mr-2 h-4 w-4" /> Export
+
+          {canWrite && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={handleFileSelected}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleImportClick}
+                disabled={importLeads.isPending}
+              >
+                {importLeads.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Upload className="mr-2 h-4 w-4" />
+                )}
+                Import
+              </Button>
+            </>
+          )}
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => exportLeads.mutate()}
+            disabled={exportLeads.isPending}
+          >
+            {exportLeads.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="mr-2 h-4 w-4" />
+            )}
+            Export
           </Button>
-          {canCreate && (
-            <Button size="sm" onClick={openNew}>
-              <Plus className="mr-2 h-4 w-4" /> New Lead
-            </Button>
+
+          {canWrite && (
+            <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+              <DialogTrigger asChild>
+                <Button size="sm">
+                  <Plus className="mr-2 h-4 w-4" />
+                  Create Lead
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md">
+                <form onSubmit={handleCreateSubmit}>
+                  <DialogHeader>
+                    <DialogTitle>Create Lead</DialogTitle>
+                    <DialogDescription>
+                      Add a new lead manually to your pipeline.
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <div className="grid gap-4 py-4">
+                    <div className="grid gap-2">
+                      <Label htmlFor="name">Name</Label>
+                      <Input
+                        id="name"
+                        value={form.name}
+                        onChange={(e) =>
+                          setForm((f) => ({ ...f, name: e.target.value }))
+                        }
+                        placeholder="Jane Doe"
+                      />
+                    </div>
+
+                    <div className="grid gap-2">
+                      <Label htmlFor="email">Email</Label>
+                      <Input
+                        id="email"
+                        type="email"
+                        value={form.email}
+                        onChange={(e) =>
+                          setForm((f) => ({ ...f, email: e.target.value }))
+                        }
+                        placeholder="jane@example.com"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="grid gap-2">
+                        <Label htmlFor="phone">Phone</Label>
+                        <Input
+                          id="phone"
+                          value={form.phone}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, phone: e.target.value }))
+                          }
+                          placeholder="9876543210"
+                        />
+                      </div>
+
+                      <div className="grid gap-2">
+                        <Label htmlFor="company">Company</Label>
+                        <Input
+                          id="company"
+                          value={form.company}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, company: e.target.value }))
+                          }
+                          placeholder="Acme Inc."
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid gap-2">
+                      <Label htmlFor="message">Message</Label>
+                      <Textarea
+                        id="message"
+                        value={form.message}
+                        onChange={(e) =>
+                          setForm((f) => ({ ...f, message: e.target.value }))
+                        }
+                        placeholder="Interested in..."
+                        rows={3}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="grid gap-2">
+                        <Label htmlFor="source">Source</Label>
+                        <Input
+                          id="source"
+                          value={form.source}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, source: e.target.value }))
+                          }
+                          placeholder="manual"
+                        />
+                      </div>
+
+                      <div className="grid gap-2">
+                        <Label htmlFor="priority">Priority</Label>
+                        <Select
+                          value={form.priority}
+                          onValueChange={(v) =>
+                            setForm((f) => ({ ...f, priority: v }))
+                          }
+                        >
+                          <SelectTrigger id="priority">
+                            <SelectValue placeholder="Priority" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="low">Low</SelectItem>
+                            <SelectItem value="medium">Medium</SelectItem>
+                            <SelectItem value="high">High</SelectItem>
+                            <SelectItem value="urgent">Urgent</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="grid gap-2">
+                        <Label htmlFor="value">Value (₹)</Label>
+                        <Input
+                          id="value"
+                          type="number"
+                          min={0}
+                          value={form.value}
+                          onChange={(e) =>
+                            setForm((f) => ({
+                              ...f,
+                              value: Number(e.target.value) || 0,
+                            }))
+                          }
+                          placeholder="0"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <DialogFooter>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setCreateOpen(false)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={createLead.isPending}>
+                      {createLead.isPending && (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      )}
+                      Create Lead
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </DialogContent>
+            </Dialog>
           )}
         </div>
       </div>
-      <CsvImportDialog entity="leads" open={importOpen} onOpenChange={setImportOpen} />
 
-      <Card className="shadow-card">
+      {/* Stats Cards */}
+      {stats && !isSuperadmin && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <StatCard label="Total" value={stats.total} />
+          <StatCard label="New" value={stats.new} color="text-blue-600" />
+          <StatCard label="Contacted" value={stats.contacted} color="text-yellow-600" />
+          <StatCard label="Qualified" value={stats.qualified} color="text-purple-600" />
+          <StatCard label="Won" value={stats.won} color="text-green-600" />
+          <StatCard label="Lost" value={stats.lost} color="text-red-600" />
+        </div>
+      )}
+
+      {/* Filters */}
+      <Card>
         <CardContent className="p-4">
           <div className="flex gap-2 flex-wrap mb-4">
-            <div className="relative flex-1 min-w-64">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Search company, contact, email..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(0); }} className="pl-9" />
-            </div>
-            <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(0); }}>
-              <SelectTrigger className="w-40"><SelectValue placeholder="Status" /></SelectTrigger>
+            <Input
+              placeholder="Search name, email, phone..."
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(0);
+              }}
+              className="flex-1 min-w-64"
+            />
+
+            {isSuperadmin && (
+              <Select
+                value={tenantFilter}
+                onValueChange={(v) => {
+                  setTenantFilter(v);
+                  setPage(0);
+                }}
+              >
+                <SelectTrigger className="w-48">
+                  <SelectValue placeholder="Tenant" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All tenants</SelectItem>
+                  {tenants?.map((t) => (
+                    <SelectItem key={t.id} value={String(t.id)}>
+                      {tenantLabel(t)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
+            <Select
+              value={statusFilter}
+              onValueChange={(v) => {
+                setStatusFilter(v);
+                setPage(0);
+              }}
+            >
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Status" />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All statuses</SelectItem>
-                {(["new","contacted","qualified","proposal_sent","negotiation","won","lost"] as LeadStatus[]).map(s => (
-                  <SelectItem key={s} value={s} className="capitalize">{s.replace("_"," ")}</SelectItem>
-                ))}
+                <SelectItem value="new">New</SelectItem>
+                <SelectItem value="contacted">Contacted</SelectItem>
+                <SelectItem value="qualified">Qualified</SelectItem>
+                <SelectItem value="proposal_sent">Proposal Sent</SelectItem>
+                <SelectItem value="won">Won</SelectItem>
+                <SelectItem value="lost">Lost</SelectItem>
               </SelectContent>
             </Select>
-            <Select value={priorityFilter} onValueChange={(v) => { setPriorityFilter(v); setPage(0); }}>
-              <SelectTrigger className="w-36"><SelectValue placeholder="Priority" /></SelectTrigger>
+
+            <Select
+              value={priorityFilter}
+              onValueChange={(v) => setPriorityFilter(v)}
+            >
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Priority" />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All priorities</SelectItem>
-                {(["low","medium","high","urgent"] as LeadPriority[]).map(p => (
-                  <SelectItem key={p} value={p} className="capitalize">{p}</SelectItem>
-                ))}
+                <SelectItem value="low">Low</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
+                <SelectItem value="high">High</SelectItem>
+                <SelectItem value="urgent">Urgent</SelectItem>
               </SelectContent>
             </Select>
           </div>
 
+          {/* Table */}
           <div className="rounded-lg border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/50">
-                  <TableHead>Company</TableHead>
+                  <TableHead>Name</TableHead>
                   <TableHead>Contact</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Priority</TableHead>
                   <TableHead>Value</TableHead>
                   <TableHead>Source</TableHead>
-                  <TableHead className="w-10"></TableHead>
+                  {isSuperadmin && <TableHead>Tenant</TableHead>}
+                  <TableHead>Created</TableHead>
+                  {canWrite && <TableHead className="w-12"></TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading && (
-                  <TableRow><TableCell colSpan={7} className="text-center py-10">
-                    <Loader2 className="h-5 w-5 animate-spin mx-auto text-muted-foreground" />
-                  </TableCell></TableRow>
+                {showLoading && (
+                  <TableRow>
+                    <TableCell colSpan={colCount} className="text-center py-10">
+                      <Loader2 className="h-5 w-5 animate-spin mx-auto text-muted-foreground" />
+                    </TableCell>
+                  </TableRow>
                 )}
-                {!isLoading && leads?.rows.length === 0 && (
-                  <TableRow><TableCell colSpan={7} className="text-center py-16">
-                    <Users className="h-10 w-10 mx-auto text-muted-foreground mb-2" />
-                    <p className="text-sm text-muted-foreground">No leads yet. Create your first one.</p>
-                  </TableCell></TableRow>
+
+                {error && (
+                  <TableRow>
+                    <TableCell colSpan={colCount} className="text-center py-10">
+                      <div className="text-red-600">
+                        <p className="font-semibold">Error loading leads</p>
+                        <p className="text-sm mt-1">{String(error)}</p>
+                      </div>
+                    </TableCell>
+                  </TableRow>
                 )}
-                {leads?.rows.map(l => (
-                  <TableRow key={l.id} className="cursor-pointer" onClick={() => openEdit(l)}>
-                    <TableCell className="font-medium">{l.company_name}</TableCell>
+
+                {!showLoading && !error && filteredItems.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={colCount} className="text-center py-16">
+                      <Users className="h-10 w-10 mx-auto text-muted-foreground mb-2" />
+                      <p className="text-sm text-muted-foreground">
+                        No leads found.
+                      </p>
+                    </TableCell>
+                  </TableRow>
+                )}
+
+                {!showLoading && !error && filteredItems.map((lead) => (
+                  <TableRow
+                    key={lead.id}
+                    className={`hover:bg-muted/30 ${canWrite ? "cursor-pointer" : ""}`}
+                    onClick={canWrite ? () => openEditDialog(lead) : undefined}
+                  >
+                    <TableCell className="font-medium">
+                      <div>{lead.name || "—"}</div>
+                      {lead.company && (
+                        <div className="text-xs text-muted-foreground">
+                          {lead.company}
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell>
-                      <div className="text-sm">{l.contact_person || "—"}</div>
-                      <div className="text-xs text-muted-foreground">{l.email}</div>
+                      <div className="text-sm">{lead.email || "—"}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {lead.phone || ""}
+                      </div>
                     </TableCell>
-                    <TableCell><Badge className={`${statusColors[l.status]} border-0 capitalize`}>{l.status.replace("_"," ")}</Badge></TableCell>
-                    <TableCell><Badge className={`${priorityColors[l.priority]} border-0 capitalize`}>{l.priority}</Badge></TableCell>
-                    <TableCell className="font-medium">${Number(l.estimated_value ?? 0).toLocaleString()}</TableCell>
-                    <TableCell className="text-muted-foreground text-sm">{l.source || "—"}</TableCell>
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8"><MoreVertical className="h-4 w-4" /></Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          {canEdit && <DropdownMenuItem onClick={() => openEdit(l)}><Pencil className="mr-2 h-4 w-4" /> Edit</DropdownMenuItem>}
-                          {!canEdit && !canDelete && <DropdownMenuItem disabled>View only</DropdownMenuItem>}
-                          {canDelete && (
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="text-destructive">
-                                <Trash2 className="mr-2 h-4 w-4" /> Delete
-                              </DropdownMenuItem>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Delete lead?</AlertDialogTitle>
-                                <AlertDialogDescription>This will soft-delete "{l.company_name}". You can restore it later.</AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => deleteMutation.mutate(l.id)}>Delete</AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                    <TableCell>
+                      <Badge
+                        className={`${
+                          statusColors[lead.status] ||
+                          "bg-gray-100 text-gray-700"
+                        } border-0 capitalize`}
+                      >
+                        {lead.status.replace("_", " ")}
+                      </Badge>
                     </TableCell>
+                    <TableCell>
+                      <Badge
+                        className={`${
+                          priorityColors[lead.priority] ||
+                          "bg-gray-100 text-gray-700"
+                        } border-0 capitalize`}
+                      >
+                        {lead.priority || "—"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {lead.value
+                        ? currencyFormatter.format(lead.value)
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {lead.source}
+                    </TableCell>
+                    {isSuperadmin && (
+                      <TableCell className="text-muted-foreground text-sm">
+                        {(() => {
+                          const t = tenants?.find((t) => t.id === lead.tenant_id);
+                          return t ? tenantLabel(t) : lead.tenant_id;
+                        })()}
+                      </TableCell>
+                    )}
+                    <TableCell className="text-muted-foreground text-sm">
+                      {new Date(lead.created_at).toLocaleDateString("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        year: "numeric",
+                      })}
+                    </TableCell>
+                    {canWrite && (
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8">
+                              <MoreVertical className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => setAttachFor(lead)}>
+                              <Link2 className="mr-2 h-4 w-4" />
+                              Attach Follow-up
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </TableCell>
+                    )}
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </div>
 
+          {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex items-center justify-between mt-4 text-sm">
-              <span className="text-muted-foreground">Page {page + 1} of {totalPages}</span>
+              <span className="text-muted-foreground">
+                Page {page + 1} of {totalPages}
+              </span>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Previous</Button>
-                <Button variant="outline" size="sm" disabled={page + 1 >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page === 0}
+                  onClick={() => setPage((p) => p - 1)}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page + 1 >= totalPages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
               </div>
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Edit / Create dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      {/* Edit Lead Dialog */}
+      <Dialog
+        open={!!editingLead}
+        onOpenChange={(open) => {
+          if (!open) closeEditDialog();
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          {editingLead && editForm && (
+            <form onSubmit={handleUpdateSubmit}>
+              <DialogHeader>
+                <DialogTitle>Edit Lead</DialogTitle>
+              </DialogHeader>
+
+              <div className="grid gap-4 py-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-name">Name</Label>
+                  <Input
+                    id="edit-name"
+                    value={editForm.name}
+                    onChange={(e) =>
+                      setEditForm((f) => f && { ...f, name: e.target.value })
+                    }
+                    placeholder="Jane Doe"
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-email">Email</Label>
+                  <Input
+                    id="edit-email"
+                    type="email"
+                    value={editForm.email}
+                    onChange={(e) =>
+                      setEditForm((f) => f && { ...f, email: e.target.value })
+                    }
+                    placeholder="jane@example.com"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-phone">Phone</Label>
+                    <Input
+                      id="edit-phone"
+                      value={editForm.phone}
+                      onChange={(e) =>
+                        setEditForm((f) => f && { ...f, phone: e.target.value })
+                      }
+                      placeholder="9876543210"
+                    />
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-company">Company</Label>
+                    <Input
+                      id="edit-company"
+                      value={editForm.company}
+                      onChange={(e) =>
+                        setEditForm((f) => f && { ...f, company: e.target.value })
+                      }
+                      placeholder="Acme Inc."
+                    />
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-message">Message</Label>
+                  <Textarea
+                    id="edit-message"
+                    value={editForm.message}
+                    onChange={(e) =>
+                      setEditForm((f) => f && { ...f, message: e.target.value })
+                    }
+                    rows={3}
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-status">Status</Label>
+                    <Select
+                      value={editForm.status}
+                      onValueChange={(v) =>
+                        setEditForm((f) => f && { ...f, status: v })
+                      }
+                    >
+                      <SelectTrigger id="edit-status">
+                        <SelectValue placeholder="Status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="new">New</SelectItem>
+                        <SelectItem value="contacted">Contacted</SelectItem>
+                        <SelectItem value="qualified">Qualified</SelectItem>
+                        <SelectItem value="proposal_sent">
+                          Proposal Sent
+                        </SelectItem>
+                        <SelectItem value="won">Won</SelectItem>
+                        <SelectItem value="lost">Lost</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-priority">Priority</Label>
+                    <Select
+                      value={editForm.priority}
+                      onValueChange={(v) =>
+                        setEditForm((f) => f && { ...f, priority: v })
+                      }
+                    >
+                      <SelectTrigger id="edit-priority">
+                        <SelectValue placeholder="Priority" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">Low</SelectItem>
+                        <SelectItem value="medium">Medium</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                        <SelectItem value="urgent">Urgent</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-value">Value (₹)</Label>
+                    <Input
+                      id="edit-value"
+                      type="number"
+                      min={0}
+                      value={editForm.value}
+                      onChange={(e) =>
+                        setEditForm(
+                          (f) =>
+                            f && { ...f, value: Number(e.target.value) || 0 }
+                        )
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <DialogFooter className="flex items-center justify-between sm:justify-between">
+                <AlertDialog
+                  open={deleteConfirmOpen}
+                  onOpenChange={setDeleteConfirmOpen}
+                >
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete this lead?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will permanently delete{" "}
+                        {editingLead.name || "this lead"}. This action cannot
+                        be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={handleDeleteConfirmed}
+                        disabled={deleteLead.isPending}
+                        className="bg-red-600 hover:bg-red-700"
+                      >
+                        {deleteLead.isPending && (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        )}
+                        Delete
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={closeEditDialog}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={updateLead.isPending}>
+                    {updateLead.isPending && (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    )}
+                    Save Changes
+                  </Button>
+                </div>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ⭐ Attach Follow-up Dialog */}
+      <Dialog
+        open={!!attachFor}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAttachFor(null);
+            setAttachSequenceId(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{editing ? "Edit lead" : "Create new lead"}</DialogTitle>
+            <DialogTitle>Attach Follow-up Sequence</DialogTitle>
+            <DialogDescription>
+              Choose a sequence to attach to{" "}
+              <strong>{attachFor?.name || "this lead"}</strong>. Tasks will be
+              created automatically.
+            </DialogDescription>
           </DialogHeader>
-          <div className="grid grid-cols-2 gap-4 py-2">
-            <div className="col-span-2 space-y-1.5">
-              <Label>Company Name *</Label>
-              <Input value={form.company_name} onChange={(e) => setForm({...form, company_name: e.target.value})} required />
-            </div>
-            <div className="space-y-1.5"><Label>Contact Person</Label><Input value={form.contact_person} onChange={(e) => setForm({...form, contact_person: e.target.value})} /></div>
-            <div className="space-y-1.5"><Label>Designation</Label><Input value={form.designation} onChange={(e) => setForm({...form, designation: e.target.value})} /></div>
-            <div className="space-y-1.5"><Label>Email</Label><Input type="email" value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} /></div>
-            <div className="space-y-1.5"><Label>Phone</Label><Input value={form.phone} onChange={(e) => setForm({...form, phone: e.target.value})} /></div>
-            <div className="space-y-1.5"><Label>Website</Label><Input value={form.website} onChange={(e) => setForm({...form, website: e.target.value})} /></div>
-            <div className="space-y-1.5"><Label>Industry</Label><Input value={form.industry} onChange={(e) => setForm({...form, industry: e.target.value})} /></div>
-            <div className="space-y-1.5"><Label>Country</Label><Input value={form.country} onChange={(e) => setForm({...form, country: e.target.value})} /></div>
-            <div className="space-y-1.5"><Label>City</Label><Input value={form.city} onChange={(e) => setForm({...form, city: e.target.value})} /></div>
-            <div className="space-y-1.5"><Label>Source</Label><Input placeholder="Website, Referral, LinkedIn..." value={form.source} onChange={(e) => setForm({...form, source: e.target.value})} /></div>
-            <div className="space-y-1.5">
-              <Label>Status</Label>
-              <Select value={form.status} onValueChange={(v) => setForm({...form, status: v as LeadStatus})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{(["new","contacted","qualified","proposal_sent","negotiation","won","lost"] as LeadStatus[]).map(s => <SelectItem key={s} value={s} className="capitalize">{s.replace("_"," ")}</SelectItem>)}</SelectContent>
+
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>Sequence</Label>
+              <Select
+                value={attachSequenceId ? String(attachSequenceId) : ""}
+                onValueChange={(v) => setAttachSequenceId(Number(v))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select sequence..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {(sequences ?? []).length === 0 && (
+                    <SelectItem value="none" disabled>
+                      No sequences yet
+                    </SelectItem>
+                  )}
+                  {(sequences ?? []).map((seq: any) => (
+                    <SelectItem key={seq.id} value={String(seq.id)}>
+                      {seq.name} ({seq.total_steps} steps)
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>Priority</Label>
-              <Select value={form.priority} onValueChange={(v) => setForm({...form, priority: v as LeadPriority})}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{(["low","medium","high","urgent"] as LeadPriority[]).map(p => <SelectItem key={p} value={p} className="capitalize">{p}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5"><Label>Estimated Value ($)</Label><Input type="number" value={form.estimated_value} onChange={(e) => setForm({...form, estimated_value: Number(e.target.value)})} /></div>
-            <div className="space-y-1.5"><Label>Expected Close Date</Label><DatePicker  value={form.expected_close_date} onChange={(val) => setForm({ ...form, expected_close_date: val })}placeholder="Select close date" /></div>            
-          <div className="col-span-2 space-y-1.5"><Label>Notes</Label><Textarea rows={3} value={form.notes} onChange={(e) => setForm({...form, notes: e.target.value})} /></div>
           </div>
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
-              {saveMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {editing ? "Save changes" : "Create lead"}
+            <Button
+              variant="outline"
+              onClick={() => {
+                setAttachFor(null);
+                setAttachSequenceId(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!attachFor || !attachSequenceId) {
+                  toast.error("Please select a sequence");
+                  return;
+                }
+                attachSequence.mutate({
+                  leadId: attachFor.id,
+                  sequenceId: attachSequenceId,
+                });
+              }}
+              disabled={attachSequence.isPending || !attachSequenceId}
+            >
+              {attachSequence.isPending && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
+              Attach Sequence
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Import Result Dialog */}
+      <Dialog open={importResultOpen} onOpenChange={setImportResultOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Import Complete</DialogTitle>
+            <DialogDescription>
+              Here's a summary of your CSV import.
+            </DialogDescription>
+          </DialogHeader>
+
+          {importResult && (
+            <div className="space-y-4 py-2">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg border p-3 text-center">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide">
+                    Total Rows
+                  </div>
+                  <div className="text-xl font-bold mt-1">
+                    {importResult.total_rows}
+                  </div>
+                </div>
+                <div className="rounded-lg border p-3 text-center">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide">
+                    Imported
+                  </div>
+                  <div className="text-xl font-bold mt-1 text-green-600">
+                    {importResult.imported}
+                  </div>
+                </div>
+                <div className="rounded-lg border p-3 text-center">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide">
+                    Failed
+                  </div>
+                  <div className="text-xl font-bold mt-1 text-red-600">
+                    {importResult.failed}
+                  </div>
+                </div>
+              </div>
+
+              {importResult.errors.length > 0 && (
+                <div className="rounded-lg border p-3 max-h-48 overflow-y-auto">
+                  <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+                    Errors
+                  </div>
+                  <ul className="space-y-1 text-sm text-red-600 list-disc list-inside">
+                    {importResult.errors.map((err, i) => (
+                      <li key={i}>{err}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button onClick={() => setImportResultOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+// ============ HELPER ============
+function StatCard({
+  label,
+  value,
+  color = "",
+}: {
+  label: string;
+  value: number;
+  color?: string;
+}) {
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="text-xs text-muted-foreground uppercase tracking-wide">
+          {label}
+        </div>
+        <div className={`text-2xl font-bold mt-1 ${color}`}>{value}</div>
+      </CardContent>
+    </Card>
   );
 }

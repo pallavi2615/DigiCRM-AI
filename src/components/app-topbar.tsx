@@ -8,19 +8,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Bell, Search, LogOut, User, Moon, Sun } from "lucide-react";
-// import { supabase } from "@/integrations/supabase/client";
-import { useUser } from "@/hooks/use-user";
+import { useAuth } from "@/hooks/use-auth";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { GlobalSearch } from "@/components/global-search";
-// import { TenantSwitcher } from "@/components/tenant-switcher";
-// import { CrmSwitcher } from "@/components/crm-switcher";
+import { TenantSwitcher } from "@/components/tenant-switcher";
+import { CrmSwitcher } from "@/components/crm-switcher";
 
 export function AppTopbar() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user} = useUser();
+  const { user, roles, logout } = useAuth();
   const [dark, setDark] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -49,35 +48,20 @@ export function AppTopbar() {
     localStorage.setItem("theme", next ? "dark" : "light");
   };
 
-  // const handleSignOut = async () => {
-  //   await queryClient.cancelQueries();
-  //   queryClient.clear();
-  //   await supabase.auth.signOut();
-  //   toast.success("Signed out");
-  //   navigate({ to: "/auth", replace: true });
-  // };
   const handleSignOut = async () => {
-    // 1. React Query cache clear karo
     await queryClient.cancelQueries();
     queryClient.clear();
-
-    // 2. FastAPI ke tokens localStorage se hatao (Supabase NAHI)
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    localStorage.removeItem("user");
-
-    // 3. Toast dikhao
+    logout(); // clears access_token, refresh_token, user from localStorage
     toast.success("Signed out");
-
-    // 4. Login page par bhejo
     navigate({ to: "/auth", replace: true });
   };
 
-  const initials = (user?.full_name || user?.email || "U")
+  const displayName = user?.full_name ?? user?.email?.split("@")[0] ?? "User";
+
+  const initials = displayName
     .split(/[\s@]/).filter(Boolean).slice(0, 2).map((s: string) => s[0]?.toUpperCase()).join("");
 
-  // const roleLabel = user?.role[0]?.replace(/_/g, " ") ?? "user";
-     const roleLabel = user?.role?.replace(/_/g, " ") ?? "user";
+  const roleLabel = roles[0]?.replace(/_/g, " ") ?? "user";
 
   return (
     <header className="sticky top-0 z-40 flex h-14 items-center gap-3 border-b bg-background/95 backdrop-blur px-4">
@@ -95,8 +79,8 @@ export function AppTopbar() {
       </button>
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
       <div className="ml-auto flex items-center gap-2">
-        {/* <CrmSwitcher />
-        <TenantSwitcher /> */}
+        <CrmSwitcher />
+        <TenantSwitcher />
         <Button variant="ghost" size="icon" onClick={toggleTheme}>
           {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </Button>
@@ -110,7 +94,7 @@ export function AppTopbar() {
                 <AvatarFallback className="text-xs gradient-primary text-primary-foreground">{initials}</AvatarFallback>
               </Avatar>
               <div className="hidden sm:flex flex-col items-start leading-tight">
-                <span className="text-xs font-medium">{user?.full_name ?? user?.email?.split("@")[0] ?? "User"}</span>
+                <span className="text-xs font-medium">{displayName}</span>
                 <span className="text-[10px] text-muted-foreground capitalize">{roleLabel}</span>
               </div>
             </Button>

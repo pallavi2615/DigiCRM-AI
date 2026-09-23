@@ -1,12 +1,8 @@
 import { usePermissions } from "@/hooks/use-permissions";
-import { useRealtimeTable } from "@/lib/use-realtime-table";
-import { useServerFn } from "@tanstack/react-start";
-import { deleteRecord } from "@/lib/rbac.functions";
 import { notifyPermissionDenied } from "@/components/permission-denied";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
-import { useActiveIndustry, scopeToIndustry } from "@/lib/active-industry";
+import { apiFetch } from "@/lib/api";
 import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,27 +15,23 @@ import {
 } from "@/components/ui/dialog";
 import { Plus, Video, Loader2, MapPin, Link as LinkIcon, Trash2, Eye, CalendarClock } from "lucide-react";
 import { toast } from "sonner";
-import { useAuth } from "@/hooks/use-auth";
 import { DateTimePicker } from "@/components/ui/datetime-picker";
+
 const validateDate = (d: string) => {
-  // 1. Khali check
   if (!d || d.trim() === "") {
     throw new Error("Date is required");
   }
 
-  // 2. Valid date check
   const date = new Date(d);
   if (isNaN(date.getTime())) {
     throw new Error("Invalid date format");
   }
 
-  // 3. Year range check (1900-2100)
   const year = date.getFullYear();
   if (year < 1900 || year > 2100) {
     throw new Error(`Year must be between 1900 and 2100 (got: ${year})`);
   }
 
-  // 4. Sahi ISO string return karo
   return date.toISOString();
 };
 
@@ -49,15 +41,36 @@ export const Route = createFileRoute("/_authenticated/meetings")({
 });
 
 interface Meeting {
-  id: string; title: string; description: string | null;
-  starts_at: string; ends_at: string; location: string | null;
-  meeting_url: string | null; status: string;
+  id: number;
+  tenant_id: number;
+  title: string;
+  description: string | null;
+  agenda: string | null;
+  scheduled_at: string;
+  duration_minutes: number;
+  status: string;
+  meeting_type: string | null;
+  location: string | null;
+  meeting_link: string | null;
+  attendees: string[];
+  notes: string | null;
+  outcome: string | null;
+  lead_id: number | null;
+  contact_id: number | null;
+  company_id: number | null;
+  created_at: string;
 }
 
-const empty = { title: "", description: "", 
-  starts_at: "", 
-  ends_at: "", 
-  location: "", meeting_url: "" };
+const empty = {
+  title: "",
+  description: "",
+  agenda: "",
+  scheduled_at: "",
+  duration_minutes: 30,
+  meeting_type: "video",
+  location: "",
+  meeting_link: "",
+};
 
 function MeetingsPage() {
   const perms = usePermissions();
@@ -65,55 +78,63 @@ function MeetingsPage() {
   const canEdit = perms.canEdit("meetings");
   const canDelete = perms.canDelete("meetings");
   const qc = useQueryClient();
-  const deleteRecordFn = useServerFn(deleteRecord);
-  useRealtimeTable("meetings", [["meetings"], ["calendar"]]);
-  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty);
   const [detail, setDetail] = useState<Meeting | null>(null);
-  const { group: crmGroup } = useActiveIndustry();
 
   const { data: meetings, isLoading } = useQuery({
-    queryKey: ["meetings", crmGroup],
-    queryFn: async () => {
-      const { data, error } = await scopeToIndustry(supabase.from("meetings").select("*").order("starts_at", { ascending: true }), crmGroup);
-      if (error) throw error;
-      return (data ?? []) as Meeting[];
-    },
+    queryKey: ["meetings"],
+    queryFn: () => apiFetch<Meeting[]>("/api/v1/meetings"),
   });
 
   const create = useMutation({
     mutationFn: async () => {
-      if (!form.title || !form.starts_at || !form.ends_at) throw new Error("Title and times required");
+      if (!form.title || !form.scheduled_at) throw new Error("Title and scheduled time required");
 
-      const startsAt = validateDate(form.starts_at);
-      const endsAt = validateDate(form.ends_at);
+      const scheduledAt = validateDate(form.scheduled_at);
 
-      const { error } = await supabase.from("meetings").insert({
-        title: form.title, description: form.description || null,
-        starts_at: startsAt,  
-        ends_at: endsAt,  
-        location: form.location || null, meeting_url: form.meeting_url || null,
-        status: "scheduled", organizer: user?.id,
+      return apiFetch<Meeting>("/api/v1/meetings", {
+        method: "POST",
+        body: JSON.stringify({
+          title: form.title,
+          description: form.description || null,
+          agenda: form.agenda || null,
+          scheduled_at: scheduledAt,
+          duration_minutes: form.duration_minutes || 30,
+          meeting_type: form.meeting_type || "video",
+          location: form.location || null,
+          meeting_link: form.meeting_link || null,
+          attendees: [],
+          lead_id: null,
+          contact_id: null,
+          company_id: null,
+        }),
       });
-      if (error) throw error;
     },
-    onSuccess: () => { toast.success("Meeting scheduled"); qc.invalidateQueries({ queryKey: ["meetings"] }); setOpen(false); setForm(empty); },
+    onSuccess: () => {
+      toast.success("Meeting scheduled");
+      qc.invalidateQueries({ queryKey: ["meetings"] });
+      setOpen(false);
+      setForm(empty);
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const del = useMutation({
-    mutationFn: async (id: string) => { await deleteRecordFn({ data: { module: "meetings", id } }); },
-    onSuccess: () => { toast.success("Cancelled"); qc.invalidateQueries({ queryKey: ["meetings"] }); },
+    mutationFn: (id: number) => apiFetch<void>(`/api/v1/meetings/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast.success("Cancelled");
+      qc.invalidateQueries({ queryKey: ["meetings"] });
+    },
     onError: (e: Error) => notifyPermissionDenied(e),
   });
 
   const setStatus = useMutation({
-    mutationFn: async ({ id, status }: { id: string; status: string }) => {
-      const { error } = await supabase.from("meetings")
-        .update({ status: status as "scheduled" | "completed" | "cancelled" | "no_show" }).eq("id", id);
-      if (error) throw error;
-    },
+    mutationFn: ({ id, status }: { id: number; status: string }) =>
+      apiFetch<Meeting>(`/api/v1/meetings/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ status }),
+      }),
     onSuccess: () => {
       toast.success("Meeting updated");
       qc.invalidateQueries({ queryKey: ["meetings"] });
@@ -123,11 +144,14 @@ function MeetingsPage() {
   });
 
   const now = new Date();
-  const upcoming = (meetings ?? []).filter(m => new Date(m.starts_at) >= now);
-  const past = (meetings ?? []).filter(m => new Date(m.starts_at) < now);
+  const upcoming = (meetings ?? []).filter(m => new Date(m.scheduled_at) >= now);
+  const past = (meetings ?? []).filter(m => new Date(m.scheduled_at) < now);
+
+  const endTime = (m: Meeting) => new Date(new Date(m.scheduled_at).getTime() + (m.duration_minutes || 0) * 60 * 1000);
 
   const renderCard = (m: Meeting) => {
-    const start = new Date(m.starts_at); const end = new Date(m.ends_at);
+    const start = new Date(m.scheduled_at);
+    const end = endTime(m);
     return (
       <Card key={m.id} className="shadow-card hover:shadow-elegant transition-shadow">
         <CardContent className="p-4">
@@ -138,7 +162,7 @@ function MeetingsPage() {
               <div className="flex flex-wrap gap-3 mt-2 text-xs text-muted-foreground">
                 <span>{start.toLocaleString()} — {end.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                 {m.location && <span className="flex items-center gap-1"><MapPin className="h-3 w-3" />{m.location}</span>}
-                {m.meeting_url && <a href={m.meeting_url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-primary hover:underline"><LinkIcon className="h-3 w-3" />Join</a>}
+                {m.meeting_link && <a href={m.meeting_link} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-primary hover:underline"><LinkIcon className="h-3 w-3" />Join</a>}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -193,17 +217,20 @@ function MeetingsPage() {
             <div className="space-y-3 text-sm">
               <p className="flex items-center gap-2 text-muted-foreground">
                 <CalendarClock className="h-4 w-4" />
-                {new Date(detail.starts_at).toLocaleString()} — {new Date(detail.ends_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                {new Date(detail.scheduled_at).toLocaleString()} — {endTime(detail).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </p>
-              {detail.description && <div><p className="text-xs text-muted-foreground">Agenda</p><p>{detail.description}</p></div>}
+              {detail.agenda && <div><p className="text-xs text-muted-foreground">Agenda</p><p>{detail.agenda}</p></div>}
+              {detail.description && <div><p className="text-xs text-muted-foreground">Description</p><p>{detail.description}</p></div>}
               <div className="grid grid-cols-2 gap-3">
                 <div><p className="text-xs text-muted-foreground">Location</p><p className="font-medium">{detail.location || "—"}</p></div>
                 <div><p className="text-xs text-muted-foreground">Join link</p>
-                  {detail.meeting_url
-                    ? <a className="text-primary hover:underline break-all" href={detail.meeting_url} target="_blank" rel="noreferrer">Open</a>
+                  {detail.meeting_link
+                    ? <a className="text-primary hover:underline break-all" href={detail.meeting_link} target="_blank" rel="noreferrer">Open</a>
                     : <p className="font-medium">—</p>}
                 </div>
               </div>
+              {detail.notes && <div><p className="text-xs text-muted-foreground">Notes</p><p>{detail.notes}</p></div>}
+              {detail.outcome && <div><p className="text-xs text-muted-foreground">Outcome</p><p>{detail.outcome}</p></div>}
               {canEdit && (
                 <div className="flex gap-2 pt-1 flex-wrap">
                   {["scheduled", "completed", "cancelled", "no_show"].map((s) => (
@@ -234,27 +261,29 @@ function MeetingsPage() {
           <div className="space-y-4 py-2">
             <div className="space-y-1.5"><Label>Title *</Label><Input value={form.title} onChange={(e) => setForm({...form, title: e.target.value})} /></div>
             <div className="space-y-1.5"><Label>Description</Label><Textarea rows={2} value={form.description} onChange={(e) => setForm({...form, description: e.target.value})} /></div>
+            <div className="space-y-1.5"><Label>Agenda</Label><Textarea rows={2} value={form.agenda} onChange={(e) => setForm({...form, agenda: e.target.value})} /></div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>Starts</Label>
+                <Label>Scheduled at</Label>
                 <DateTimePicker
-                  value={form.starts_at}
-                  onChange={(val) => setForm({ ...form, starts_at: val })}
-                  placeholder="Select start date & time"
+                  value={form.scheduled_at}
+                  onChange={(val) => setForm({ ...form, scheduled_at: val })}
+                  placeholder="Select date & time"
                 />
               </div>
-
               <div className="space-y-1.5">
-                <Label>Ends</Label>
-                <DateTimePicker
-                  value={form.ends_at}
-                  onChange={(val) => setForm({ ...form, ends_at: val })}
-                  placeholder="Select end date & time"
+                <Label>Duration (minutes)</Label>
+                <Input
+                  type="number"
+                  min={5}
+                  step={5}
+                  value={form.duration_minutes}
+                  onChange={(e) => setForm({ ...form, duration_minutes: Number(e.target.value) || 30 })}
                 />
               </div>
             </div>
             <div className="space-y-1.5"><Label>Location</Label><Input value={form.location} onChange={(e) => setForm({...form, location: e.target.value})} /></div>
-            <div className="space-y-1.5"><Label>Meeting URL</Label><Input placeholder="https://meet.google.com/..." value={form.meeting_url} onChange={(e) => setForm({...form, meeting_url: e.target.value})} /></div>
+            <div className="space-y-1.5"><Label>Meeting URL</Label><Input placeholder="https://meet.google.com/..." value={form.meeting_link} onChange={(e) => setForm({...form, meeting_link: e.target.value})} /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>

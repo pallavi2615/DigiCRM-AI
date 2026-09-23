@@ -2,7 +2,7 @@ import { Check, ChevronsUpDown, Building2, Crown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
-import { useActiveTenant } from "@/lib/tenants";
+import { useActiveTenant } from "@/lib/queries/tenants";
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 

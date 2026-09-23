@@ -14,30 +14,6 @@ import { useAuth } from "@/hooks/use-auth";
 import { objectsToCsv } from "@/lib/csv";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList } from "recharts";
 
-import { DatePicker, DateTimePicker } from "@/components/ui/datetime-picker";
-const validateDate = (d: string) => {
-  // 1. Khali check
-  if (!d || d.trim() === "") {
-    throw new Error("Date is required");
-  }
-
-  // 2. Valid date check
-  const date = new Date(d);
-  if (isNaN(date.getTime())) {
-    throw new Error("Invalid date format");
-  }
-
-  // 3. Year range check (1900-2100)
-  const year = date.getFullYear();
-  if (year < 1900 || year > 2100) {
-    throw new Error(`Year must be between 1900 and 2100 (got: ${year})`);
-  }
-
-  // 4. Sahi ISO string return karo
-  return date.toISOString();
-};
-
-
 export const Route = createFileRoute("/_authenticated/landing-conversions")({
   head: () => ({ meta: [{ title: "Conversions by Source — DigiCRM AI" }, { name: "robots", content: "noindex" }] }),
   component: () => (
@@ -217,18 +193,8 @@ function ConversionsPage() {
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-1"><Label className="text-xs">From</Label>
-          <DatePicker
-              value={from}
-              onChange={(val) => setFrom(val)}
-              placeholder="Start Date"
-            /></div>
-          <div className="space-y-1"><Label className="text-xs">To</Label>
-          <DatePicker
-              value={to}
-              onChange={(val) => setTo(val)}
-              placeholder="End Date"
-            /></div>
+          <div className="space-y-1"><Label className="text-xs">From</Label><Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+          <div className="space-y-1"><Label className="text-xs">To</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
           <div className="space-y-1"><Label className="text-xs">Quick range</Label>
             <div className="flex gap-1">
               <Button size="sm" variant="outline" onClick={() => { setFrom(todayISO(6)); setTo(todayISO(0)); }}>7d</Button>

@@ -1,13 +1,10 @@
 import { usePermissions } from "@/hooks/use-permissions";
-import { useRealtimeTable } from "@/lib/use-realtime-table";
-import { useServerFn } from "@tanstack/react-start";
-import { deleteRecord } from "@/lib/rbac.functions";
 import { notifyPermissionDenied } from "@/components/permission-denied";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
-import { useActiveIndustry, scopeToIndustry } from "@/lib/active-industry";
-import { useState } from "react";
+import { apiFetch, apiUpload, apiDownload } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
+import { useMemo, useRef, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,40 +23,62 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Plus, Search, MoreVertical, Trash2, Pencil, Loader2, UserCircle, Mail, Phone, Upload, Download } from "lucide-react";
-import { CsvImportDialog } from "@/components/csv-import-dialog";
-import { downloadCsv, objectsToCsv } from "@/lib/csv";
-
+import { Plus, Search, MoreVertical, Trash2, Pencil, Loader2, UserCircle, Mail, Phone, Upload, Download, Eye } from "lucide-react";
 import { toast } from "sonner";
-import { useAuth } from "@/hooks/use-auth";
-import { escapePostgrestFilterValue } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/contacts")({
   head: () => ({ meta: [{ title: "Contacts — DigiCRM AI" }] }),
   component: ContactsPage,
 });
 
+const BASE = "/api/v1/contacts";
+
 interface Contact {
-  id: string; first_name: string; last_name: string | null;
-  email: string | null; phone: string | null; designation: string | null;
-  company_id: string | null; notes: string | null; created_at: string;
+  id: number;
+  tenant_id?: number;
+  first_name: string;
+  last_name: string | null;
+  designation: string | null;
+  email: string | null;
+  phone: string | null;
+  company_id: number | null;
+  notes: string | null;
+  linkedin_url?: string | null;
+  avatar_url?: string | null;
+  owner_id?: number | null;
+  tags?: string[];
+  status?: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+interface CompanyLite { id: number; name: string }
+
+interface ImportResult {
+  total_rows: number;
+  imported: number;
+  failed: number;
+  errors: unknown[];
 }
 
 const empty = { first_name: "", last_name: "", email: "", phone: "", designation: "", company_id: "", notes: "" };
 
+// FastAPI/Pydantic rejects "" for typed fields like EmailStr, so send null instead.
+const nullIfEmpty = (v: string) => (v.trim() === "" ? null : v.trim());
+
 function ContactsPage() {
   const perms = usePermissions();
-  const canCreate = perms.canCreate("contacts");
-  const canEdit = perms.canEdit("contacts");
-  const canDelete = perms.canDelete("contacts");
+  const { hasRole, loading: authLoading } = useAuth();
+  // super admins get read-only access here; also stay read-only until auth has loaded
+  const isSuperAdmin = authLoading || hasRole("super_admin");
+  const canCreate = !isSuperAdmin && perms.canCreate("contacts");
+  const canEdit = !isSuperAdmin && perms.canEdit("contacts");
+  const canDelete = !isSuperAdmin && perms.canDelete("contacts");
   const qc = useQueryClient();
-  const deleteRecordFn = useServerFn(deleteRecord);
-  useRealtimeTable("contacts", [["contacts"]]);
-  const { user } = useAuth();
+  const fileRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
   const [companyFilter, setCompanyFilter] = useState<string>("all");
   const [open, setOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState<Contact | null>(null);
   const [form, setForm] = useState(empty);
   const [page, setPage] = useState(1);
@@ -68,37 +87,54 @@ function ContactsPage() {
   const { data: companies } = useQuery({
     queryKey: ["companies-lite"],
     queryFn: async () => {
-      const { data } = await supabase.from("companies").select("id, name").is("deleted_at", null).order("name");
-      return data ?? [];
+      const rows = await apiFetch<CompanyLite[]>("/api/v1/companies");
+      return rows
+        .map((c) => ({ id: c.id, name: c.name }))
+        .sort((a, b) => a.name.localeCompare(b.name));
     },
   });
 
-  const { group: crmGroup } = useActiveIndustry();
-
-  const { data: contacts, isLoading } = useQuery({
-    queryKey: ["contacts", search, companyFilter, crmGroup],
-    queryFn: async () => {
-      let q = supabase.from("contacts").select("*").is("deleted_at", null).order("created_at", { ascending: false });
-      q = scopeToIndustry(q, crmGroup);
-      if (search) q = q.or(`first_name.ilike.%${escapePostgrestFilterValue(search)}%,last_name.ilike.%${escapePostgrestFilterValue(search)}%,email.ilike.%${escapePostgrestFilterValue(search)}%`);
-      if (companyFilter !== "all") q = q.eq("company_id", companyFilter);
-      const { data, error } = await q;
-      if (error) throw error;
-      return (data ?? []) as Contact[];
-    },
+  const { data: allContacts, isLoading } = useQuery({
+    queryKey: ["contacts"],
+    queryFn: () => apiFetch<Contact[]>(BASE),
   });
+
+  // Search and company filter run client-side; move them to query params
+  // if the API supports them and the list gets large.
+  const contacts = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return [...(allContacts ?? [])]
+      .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))
+      .filter((c) => companyFilter === "all" || String(c.company_id) === companyFilter)
+      .filter((c) =>
+        !q || [c.first_name, c.last_name, c.email].some((v) => v?.toLowerCase().includes(q)),
+      );
+  }, [allContacts, search, companyFilter]);
 
   const save = useMutation({
     mutationFn: async () => {
       if (!form.first_name.trim()) throw new Error("First name is required");
-      const payload = { ...form, company_id: form.company_id || null, created_by: user?.id, ...(editing ? {} : { industry_group: crmGroup }) };
+      const payload = {
+        first_name: form.first_name.trim(),
+        last_name: nullIfEmpty(form.last_name),
+        email: nullIfEmpty(form.email),
+        phone: nullIfEmpty(form.phone),
+        designation: nullIfEmpty(form.designation),
+        company_id: form.company_id ? Number(form.company_id) : null,
+        notes: nullIfEmpty(form.notes),
+        // keep values the form doesn't edit so a PUT doesn't wipe them
+        ...(editing ? { tags: editing.tags ?? [], status: editing.status } : {}),
+      };
       if (editing) {
-        const { error } = await supabase.from("contacts").update(payload).eq("id", editing.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.from("contacts").insert(payload);
-        if (error) throw error;
+        return apiFetch<Contact>(`${BASE}/${editing.id}`, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
       }
+      return apiFetch<Contact>(BASE, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
     },
     onSuccess: () => {
       toast.success(editing ? "Contact updated" : "Contact created");
@@ -109,18 +145,43 @@ function ContactsPage() {
   });
 
   const del = useMutation({
-    mutationFn: async (id: string) => {
-      await deleteRecordFn({ data: { module: "contacts", id } });
-    },
+    mutationFn: (id: number) => apiFetch<unknown>(`${BASE}/${id}`, { method: "DELETE" }),
     onSuccess: () => { toast.success("Deleted"); qc.invalidateQueries({ queryKey: ["contacts"] }); },
     onError: (e: Error) => notifyPermissionDenied(e),
   });
+
+  const importCsv = useMutation({
+    mutationFn: (file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      return apiUpload<ImportResult>(`${BASE}/import`, fd);
+    },
+    onSuccess: (r) => {
+      if (r.failed > 0) {
+        toast.warning(`Imported ${r.imported} of ${r.total_rows} rows (${r.failed} failed)`);
+      } else {
+        toast.success(`Imported ${r.imported} contacts`);
+      }
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const exportCsv = useMutation({
+    mutationFn: () => apiDownload(`${BASE}/export`, "contacts.csv"),
+    onSuccess: () => toast.success("Contacts exported"),
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  // Opening an existing record without edit rights shows it read-only.
+  const viewOnly = !!editing && !canEdit;
 
   const openEdit = (c: Contact) => {
     setEditing(c);
     setForm({
       first_name: c.first_name, last_name: c.last_name ?? "", email: c.email ?? "",
-      phone: c.phone ?? "", designation: c.designation ?? "", company_id: c.company_id ?? "",
+      phone: c.phone ?? "", designation: c.designation ?? "",
+      company_id: c.company_id != null ? String(c.company_id) : "",
       notes: c.notes ?? "",
     });
     setOpen(true);
@@ -131,40 +192,51 @@ function ContactsPage() {
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold">Contacts</h1>
-          <p className="text-muted-foreground text-sm mt-1">{contacts?.length ?? 0} contacts across your network.</p>
+          <p className="text-muted-foreground text-sm mt-1">{allContacts?.length ?? 0} contacts across your network.</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
-            <Upload className="mr-2 h-4 w-4" /> Import
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => {
-            if (!contacts?.length) return toast.error("Nothing to export");
-            const headers = ["first_name","last_name","email","phone","designation"];
-            downloadCsv("contacts.csv", objectsToCsv(contacts as never, headers));
-            toast.success(`Exported ${contacts.length} contacts`);
-          }}>
-            <Download className="mr-2 h-4 w-4" /> Export
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) importCsv.mutate(file);
+              e.target.value = "";
+            }}
+          />
+          {canCreate && (
+            <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()} disabled={importCsv.isPending}>
+              {importCsv.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />} Import
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={() => exportCsv.mutate()} disabled={exportCsv.isPending}>
+            {exportCsv.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />} Export
           </Button>
           {canCreate && (<Button size="sm" onClick={() => { setEditing(null); setForm(empty); setOpen(true); }}>
             <Plus className="mr-2 h-4 w-4" /> New Contact
           </Button>)}
-
         </div>
       </div>
-      <CsvImportDialog entity="contacts" open={importOpen} onOpenChange={setImportOpen} />
 
       <Card className="shadow-card">
         <CardContent className="p-4">
           <div className="flex gap-2 flex-wrap mb-4">
             <div className="relative flex-1 min-w-64">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input placeholder="Search name or email..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+              <Input
+                placeholder="Search name or email..."
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                className="pl-9"
+              />
             </div>
-            <Select value={companyFilter} onValueChange={setCompanyFilter}>
+            <Select value={companyFilter} onValueChange={(v) => { setCompanyFilter(v); setPage(1); }}>
               <SelectTrigger className="w-56"><SelectValue placeholder="All companies" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All companies</SelectItem>
-                {(companies ?? []).map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                {(companies ?? []).map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -178,15 +250,15 @@ function ContactsPage() {
               </TableRow></TableHeader>
               <TableBody>
                 {isLoading && <TableRow><TableCell colSpan={5} className="text-center py-10"><Loader2 className="h-5 w-5 animate-spin mx-auto text-muted-foreground" /></TableCell></TableRow>}
-                {!isLoading && contacts?.length === 0 && (
+                {!isLoading && contacts.length === 0 && (
                   <TableRow><TableCell colSpan={5} className="text-center py-16">
                     <UserCircle className="h-10 w-10 mx-auto text-muted-foreground mb-2" />
                     <p className="text-sm text-muted-foreground">No contacts yet.</p>
                   </TableCell></TableRow>
                 )}
-                {(contacts ?? []).slice((page - 1) * pageSize, page * pageSize).map(c => {
+                {contacts.slice((page - 1) * pageSize, page * pageSize).map(c => {
                   const name = `${c.first_name} ${c.last_name ?? ""}`.trim();
-                  const initials = (c.first_name[0] + (c.last_name?.[0] ?? "")).toUpperCase();
+                  const initials = ((c.first_name?.[0] ?? "") + (c.last_name?.[0] ?? "")).toUpperCase();
                   return (
                     <TableRow key={c.id} data-testid="contact-row" data-contact-id={c.id} className="cursor-pointer" onClick={() => openEdit(c)}>
                       <TableCell>
@@ -199,14 +271,20 @@ function ContactsPage() {
                       <TableCell className="text-sm">{c.email ? <span className="flex items-center gap-1.5"><Mail className="h-3 w-3" />{c.email}</span> : "—"}</TableCell>
                       <TableCell className="text-sm">{c.phone ? <span className="flex items-center gap-1.5"><Phone className="h-3 w-3" />{c.phone}</span> : "—"}</TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreVertical className="h-4 w-4" /></Button></DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            {canEdit && <DropdownMenuItem onClick={() => openEdit(c)}><Pencil className="mr-2 h-4 w-4" /> Edit</DropdownMenuItem>}
-                            {canDelete && <DropdownMenuItem className="text-destructive" onClick={() => del.mutate(c.id)}><Trash2 className="mr-2 h-4 w-4" /> Delete</DropdownMenuItem>}
-                          {!canEdit && !canDelete && <DropdownMenuItem disabled>View only</DropdownMenuItem>}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        {canEdit || canDelete ? (
+                            <DropdownMenu>
+                            <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreVertical className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              {canEdit && <DropdownMenuItem onClick={() => openEdit(c)}><Pencil className="mr-2 h-4 w-4" /> Edit</DropdownMenuItem>}
+                              {canDelete && <DropdownMenuItem className="text-destructive" onClick={() => del.mutate(c.id)}><Trash2 className="mr-2 h-4 w-4" /> Delete</DropdownMenuItem>}
+                              {!canEdit && <DropdownMenuItem onClick={() => openEdit(c)}><Eye className="mr-2 h-4 w-4" /> View</DropdownMenuItem>}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : (
+                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="View" title="View" onClick={() => openEdit(c)}>
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
@@ -214,8 +292,8 @@ function ContactsPage() {
               </TableBody>
             </Table>
           </div>
-          {(contacts?.length ?? 0) > 0 && (() => {
-            const total = contacts!.length;
+          {contacts.length > 0 && (() => {
+            const total = contacts.length;
             const pageCount = Math.max(1, Math.ceil(total / pageSize));
             const curr = Math.min(page, pageCount);
             return (
@@ -242,8 +320,8 @@ function ContactsPage() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-xl">
-          <DialogHeader><DialogTitle>{editing ? "Edit contact" : "New contact"}</DialogTitle></DialogHeader>
-          <div className="grid grid-cols-2 gap-4 py-2">
+          <DialogHeader><DialogTitle>{editing ? (canEdit ? "Edit contact" : "View contact") : "New contact"}</DialogTitle></DialogHeader>
+          <fieldset disabled={viewOnly} className="grid grid-cols-2 gap-4 py-2 min-w-0">
             <div className="space-y-1.5"><Label>First Name *</Label><Input value={form.first_name} onChange={(e) => setForm({...form, first_name: e.target.value})} /></div>
             <div className="space-y-1.5"><Label>Last Name</Label><Input value={form.last_name} onChange={(e) => setForm({...form, last_name: e.target.value})} /></div>
             <div className="space-y-1.5"><Label>Email</Label><Input type="email" value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} /></div>
@@ -255,15 +333,17 @@ function ContactsPage() {
                 <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">None</SelectItem>
-                  {(companies ?? []).map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                  {(companies ?? []).map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div className="col-span-2 space-y-1.5"><Label>Notes</Label><Textarea rows={3} value={form.notes} onChange={(e) => setForm({...form, notes: e.target.value})} /></div>
-          </div>
+          </fieldset>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{editing ? "Save" : "Create"}</Button>
+            <Button variant="outline" onClick={() => setOpen(false)}>{viewOnly ? "Close" : "Cancel"}</Button>
+            {!viewOnly && (
+              <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{editing ? "Save" : "Create"}</Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

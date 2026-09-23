@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { StaffGuard } from "@/components/staff-guard";
-import { useActiveTenant } from "@/lib/tenants";
+import { useActiveTenant } from "@/lib/queries/tenants";   
 import { INDUSTRY_PACKS, type IndustryPack, type PackAgent, type PackField, type PackFieldType } from "@/lib/industry-packs";
 import { mergePack, type PackOverride } from "@/lib/pack-merge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,7 +60,7 @@ function TenantPackSettings() {
       const { data, error } = await supabase
         .from("pack_configs")
         .select(SELECT_COLS)
-        .eq("tenant_id", tenantId!)
+        .eq("tenant_id", String(tenantId))
         .eq("group_slug", group)
         .eq("pack_slug", slug)
         .maybeSingle();
@@ -103,7 +103,7 @@ function TenantPackSettings() {
       const { data: existing } = await supabase
         .from("pack_configs")
         .select("id")
-        .eq("tenant_id", tenantId)
+        .eq("tenant_id", String(tenantId))
         .eq("group_slug", group)
         .eq("pack_slug", slug)
         .maybeSingle();
@@ -127,7 +127,7 @@ function TenantPackSettings() {
       const { error } = await supabase
         .from("pack_configs")
         .delete()
-        .eq("tenant_id", tenantId)
+        .eq("tenant_id", String(tenantId))
         .eq("group_slug", group)
         .eq("pack_slug", slug);
       if (error) throw error;
@@ -409,7 +409,7 @@ function PackLivePreview({ pack, tenantName }: { pack: IndustryPack; tenantName:
         <CardContent>
           <div className="flex gap-3 overflow-x-auto pb-2">
             {pack.stages.map((stage, i) => (
-              <div key={`${stage}-${i}`} className="min-w-[170px] flex-1 rounded-lg border bg-muted/30 p-2">
+              <div key={`${stage}-${i}`} className="min-w-42.5 flex-1 rounded-lg border bg-muted/30 p-2">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <span className="truncate text-xs font-semibold">{stage}</span>
                   {pack.wonStages.includes(stage) && <Badge className="text-[10px]">won</Badge>}
@@ -445,7 +445,7 @@ function PackLivePreview({ pack, tenantName }: { pack: IndustryPack; tenantName:
           <CardDescription>What a {pack.partyLabel.toLowerCase()} of {tenantName} sees when they sign in.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className={"rounded-lg bg-gradient-to-r from-primary to-primary/60 p-4 text-primary-foreground"}>
+          <div className={"rounded-lg bg-linear-to-r from-primary to-primary/60 p-4 text-primary-foreground"}>
             <div className="text-sm font-semibold">{pack.name}</div>
             <div className="text-xs opacity-90">{pack.tagline}</div>
           </div>

@@ -1,7 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
-import { useActiveIndustry, scopeToIndustry } from "@/lib/active-industry";
+import { apiFetch } from "@/lib/api";
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -22,11 +21,12 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { useAuth } from "@/hooks/use-auth";
 import { notifyPermissionDenied } from "@/components/permission-denied";
 import { toast } from "sonner";
-import { useRealtimeTable } from "@/lib/use-realtime-table";
-import { convertProposalToDeal, proposalStageToDealStage, canConvert, type ProposalStage, type ApprovalStatus } from "@/lib/proposal-deal";
+import {
+  convertProposalToDeal, proposalStageToDealStage, canConvert,
+  type ProposalStage, type ConvertibleProposal, type ConvertibleLead,
+} from "@/lib/proposal-deal";
 import { ApprovalBadge, ApprovalHistory, ProposalTimeline } from "@/components/proposal-timeline";
 
-import { DatePicker } from "@/components/ui/datetime-picker";
 
 export const Route = createFileRoute("/_authenticated/pipeline")({
   head: () => ({ meta: [{ title: "Pipeline — DigiCRM AI" }] }),
@@ -39,6 +39,27 @@ interface Deal {
   estimated_value: number | null; priority: string; email?: string | null; phone?: string | null;
   source?: string | null; expected_close_date?: string | null; notes?: string | null;
   industry?: string | null; updated_at?: string;
+}
+
+// Shape returned by GET /api/v1/pipeline
+interface PipelineStageDTO {
+  stage: {
+    key: string; label: string; color: string; probability: number;
+    order_index: number; is_won: boolean; is_lost: boolean;
+  };
+  deals: Array<{
+    id: number; company_name: string; contact_person: string | null;
+    email: string | null; phone: string | null; status: string; priority: string;
+    estimated_value: number | null; expected_close_date: string | null;
+    source: string | null; industry: string | null; updated_at: string;
+  }>;
+  count: number;
+  total_value: number;
+}
+interface PipelineResponse {
+  stages: PipelineStageDTO[];
+  total_deals: number;
+  total_value: number;
 }
 
 const stages: { key: Status; label: string; color: string; prob: number }[] = [
@@ -54,11 +75,7 @@ const stages: { key: Status; label: string; color: string; prob: number }[] = [
 /** Urgent deals surface at the top of every stage column. */
 const PRIORITY_RANK: Record<string, number> = { urgent: 4, high: 3, medium: 2, low: 1 };
 
-interface PipelineProposal {
-  id: string; title: string; lead_id: string | null; contact_id: string | null; company_id: string | null;
-  stage: ProposalStage; value: number; close_date: string | null; owner_id: string | null; notes: string | null;
-  approval_status: ApprovalStatus | null;
-}
+type PipelineProposal = ConvertibleProposal;
 
 function PipelinePage() {
   const qc = useQueryClient();
@@ -72,29 +89,21 @@ function PipelinePage() {
   const [stageFilter, setStageFilter] = useState("all");
   const [companyFilter, setCompanyFilter] = useState("all");
 
-
   const { data: proposals } = useQuery({
     queryKey: ["pipeline-proposals"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("proposals")
-        .select("id, title, lead_id, contact_id, company_id, stage, value, close_date, owner_id, notes, approval_status")
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false })
-        .limit(50);
-      if (error) throw error;
-      return (data ?? []) as unknown as PipelineProposal[];
+      return apiFetch<PipelineProposal[]>("/api/v1/proposals?limit=50");
     },
   });
 
   const convert = useMutation({
     mutationFn: async (p: PipelineProposal) => {
       if (!user?.id) throw new Error("Not signed in");
-      return convertProposalToDeal(p, {
-        dealStage: proposalStageToDealStage[p.stage],
-        value: Number(p.value ?? 0),
-        ownerId: p.owner_id ?? user.id,
-        userId: user.id,
+      if (!p.lead_id) throw new Error("This proposal isn't linked to a lead yet.");
+      const lead = await apiFetch<ConvertibleLead>(`/api/v1/leads/${p.lead_id}`);
+      return convertProposalToDeal(p, lead, {
+        dealStage: proposalStageToDealStage[p.status as ProposalStage],
+        value: Number(p.amount ?? 0),
       });
     },
     onSuccess: () => {
@@ -105,8 +114,6 @@ function PipelinePage() {
     },
     onError: (e: Error) => notifyPermissionDenied(e),
   });
-
-
 
   const openDeal = (d: Deal) => {
     setDetail(d);
@@ -119,66 +126,86 @@ function PipelinePage() {
     });
   };
 
+  
   const saveDeal = async () => {
   if (!detail) return;
-
-  const { error } = await supabase
-    .from("leads")
-    .update({
-      status: edit.status,
-      estimated_value:
-        edit.estimated_value === ""
-          ? null
-          : Number(edit.estimated_value),
-      priority: edit.priority as "low" | "medium" | "high" | "urgent",
-      expected_close_date: edit.expected_close_date || null,
-      notes: edit.notes || null,
-    })
-    .eq("id", detail.id);
-
-  if (error) return notifyPermissionDenied(error);
-
+  try {
+    await apiFetch(`/api/v1/leads/${detail.id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        name: detail.company_name,        // keep existing
+        email: detail.email,
+        phone: detail.phone,
+        company: detail.company_name,
+        message: detail.notes ?? "",
+        status: edit.status,
+        priority: edit.priority,
+        value: edit.estimated_value === "" ? 0 : Number(edit.estimated_value),
+        assigned_to: null,                // preserve if you track it
+        score: 0,
+        custom_fields: {},
+      }),
+    });
+  } catch (e) {
+    return notifyPermissionDenied(e as Error);
+  }
   toast.success("Deal updated");
   setDetail(null);
-
   qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
   qc.invalidateQueries({ queryKey: ["kpi"] });
 };
 
-  const { group: crmGroup } = useActiveIndustry();
-
-  const { data: deals, isLoading } = useQuery({
-    queryKey: ["pipeline-deals", crmGroup],
+  const { data: pipeline, isLoading } = useQuery({
+    queryKey: ["pipeline-deals"],
     queryFn: async () => {
-      const { data, error } = await supabase.from("leads")
-        .select("id, company_name, contact_person, status, estimated_value, priority, email, phone, source, expected_close_date, notes, industry, updated_at")
-        .is("deleted_at", null).order("updated_at", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as Deal[];
+      return apiFetch<PipelineResponse>("/api/v1/pipeline");
     },
+    // No websocket/SSE endpoint provided yet, so poll instead of Supabase realtime.
+    refetchInterval: 15000,
   });
 
-  useRealtimeTable("leads", [["pipeline-deals"], ["kpi"], ["funnel"], ["sources"], ["monthly"]]);
-
+  const deals: Deal[] = (pipeline?.stages ?? []).flatMap((s) =>
+    s.deals.map((d) => ({
+      id: String(d.id),
+      company_name: d.company_name,
+      contact_person: d.contact_person,
+      status: d.status as Status,
+      estimated_value: d.estimated_value,
+      priority: d.priority,
+      email: d.email,
+      phone: d.phone,
+      source: d.source,
+      expected_close_date: d.expected_close_date ?? undefined,
+      notes: null,
+      industry: d.industry,
+      updated_at: d.updated_at,
+    })),
+  );
 
   const handleDrop = async (status: Status) => {
     if (!dragId) return;
     const id = dragId; setDragId(null);
-    const { error } = await supabase.from("leads").update({ status }).eq("id", id);
-    if (error) return toast.error(error.message);
-    toast.success(`Moved to ${status.replace("_"," ")}`);
+    try {
+      await apiFetch(`/api/v1/pipeline/deals/${id}/stage`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      });
+    } catch (e) {
+      return toast.error((e as Error).message);
+    }
+    toast.success(`Moved to ${status.replace("_", " ")}`);
     qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
     qc.invalidateQueries({ queryKey: ["kpi"] });
   };
 
   if (isLoading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-6 w-6 animate-spin" /></div>;
 
-  const companies = [...new Set((deals ?? []).map((d) => d.company_name).filter(Boolean))].sort();
+  const companies = [...new Set(deals.map((d) => d.company_name).filter(Boolean))].sort();
   const activeFilters =
     (priorityFilter === "all" ? 0 : 1) + (stageFilter === "all" ? 0 : 1) + (companyFilter === "all" ? 0 : 1);
   const clearFilters = () => { setPriorityFilter("all"); setStageFilter("all"); setCompanyFilter("all"); };
 
-  const visibleDeals = (deals ?? []).filter((d) =>
+  const visibleDeals = deals.filter((d) =>
     (priorityFilter === "all" || d.priority === priorityFilter) &&
     (stageFilter === "all" || d.status === stageFilter) &&
     (companyFilter === "all" || d.company_name === companyFilter),
@@ -325,16 +352,16 @@ function PipelinePage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <p className="font-medium text-sm truncate">{p.title}</p>
-                  <Badge variant="secondary" className="text-[10px] capitalize">{p.stage}</Badge>
-                  {p.lead_id && <Badge variant="outline" className="text-[10px]">In pipeline</Badge>}
+                  <Badge variant="secondary" className="text-[10px] capitalize">{p.status}</Badge>
+                  {p.pipeline_stage === "in_pipeline" && <Badge variant="outline" className="text-[10px]">In pipeline</Badge>}
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  ₹{Number(p.value ?? 0).toLocaleString()} · close {p.close_date ? new Date(p.close_date).toLocaleDateString() : "—"}
+                  {p.currency} {Number(p.amount ?? 0).toLocaleString()} · close {p.close_date ? new Date(p.close_date).toLocaleDateString() : "—"}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <ApprovalBadge status={p.approval_status} />
-              {canEdit && !p.lead_id && canConvert(p) && (
+              {canEdit && p.pipeline_stage !== "in_pipeline" && canConvert(p) && (
                 <Button size="sm" variant="outline" onClick={() => convert.mutate(p)} disabled={convert.isPending}>
                   {convert.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ArrowRightLeft className="mr-1.5 h-3.5 w-3.5" />}
                   Convert to deal
@@ -388,19 +415,9 @@ function PipelinePage() {
                     <div className="space-y-1.5"><Label>Deal value</Label>
                       <Input type="number" min={0} value={edit.estimated_value} onChange={(e) => setEdit({ ...edit, estimated_value: e.target.value })} />
                     </div>
-                    <div className="space-y-1.5">
-                          <Label>Expected close</Label>
-                          <DatePicker
-                            value={edit.expected_close_date}
-                            onChange={(val) =>
-                              setEdit((prev) => ({
-                                ...prev,
-                                expected_close_date: val,
-                              }))
-                            }
-                            placeholder="Select Expected Close Date"
-                          />
-                        </div>
+                    <div className="space-y-1.5"><Label>Expected close</Label>
+                      <Input type="date" value={edit.expected_close_date} onChange={(e) => setEdit({ ...edit, expected_close_date: e.target.value })} />
+                    </div>
                   </div>
                   <div className="space-y-1.5"><Label>Notes</Label>
                     <Textarea rows={3} value={edit.notes} onChange={(e) => setEdit({ ...edit, notes: e.target.value })} />
@@ -423,12 +440,12 @@ function PipelinePage() {
                 <FileText className="h-3.5 w-3.5" /> Proposal timeline
               </p>
               <ProposalTimeline
-                proposalIds={(proposals ?? []).filter((p) => p.lead_id === detail.id).map((p) => p.id)}
+                proposalIds={(proposals ?? []).filter((p) => String(p.lead_id) === detail.id).map((p) => String(p.id))}
               />
-              {(proposals ?? []).filter((p) => p.lead_id === detail.id).map((p) => (
+              {(proposals ?? []).filter((p) => String(p.lead_id) === detail.id).map((p) => (
                 <div key={p.id} className="mt-3">
                   <p className="text-xs text-muted-foreground mb-1">Approval history — {p.title}</p>
-                  <ApprovalHistory proposalId={p.id} />
+                  <ApprovalHistory proposalId={String(p.id)} />
                 </div>
               ))}
             </div>

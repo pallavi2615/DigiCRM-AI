@@ -4,7 +4,7 @@ import { groupForRoute } from "@/lib/industry-access";
 import { INDUSTRY_TABS } from "@/components/industry-tabs";
 import { IndustryModule, type IndustryModuleKey } from "@/components/industry-module";
 import { Button } from "@/components/ui/button";
-import { HealthcarePipeline } from "@/components/healthcare/health-pipeline";
+
 export const Route = createFileRoute("/_authenticated/industry/$slug/$section")({
   head: ({ params }) => {
     const preset = getIndustry(params.slug);
