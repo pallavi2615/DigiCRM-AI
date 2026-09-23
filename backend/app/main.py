@@ -25,7 +25,7 @@ from app.routes import ( auth_routes,
 from app.api.v1.ai import router as ai_router
 from app.routes import tenants_routes
 from app.worker.followup_worker import start_worker, stop_worker
-from app.routes import task_routes
+from app.routes import task_routes, ticket_routes
 
 
 app = FastAPI(
@@ -64,6 +64,7 @@ app.include_router(followup_routes.router, prefix=settings.API_V1_PREFIX)
 app.include_router(task_routes.router, prefix=settings.API_V1_PREFIX)
 app.include_router(calendar_routes.router, prefix=settings.API_V1_PREFIX)
 app.include_router(meeting_routes.router, prefix=settings.API_V1_PREFIX)
+app.include_router(ticket_routes.router, prefix=settings.API_V1_PREFIX)
 
 # Public webhook (no /api/v1 prefix)
 app.include_router(webhook_routes.router)                    

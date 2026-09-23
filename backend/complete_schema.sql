@@ -419,6 +419,96 @@ CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date);
 CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_to);
 CREATE INDEX IF NOT EXISTS idx_tasks_lead ON tasks(lead_id);
 
+-- ============================================================
+-- TICKETS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tickets (
+    id SERIAL PRIMARY KEY,
+    tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE,
+    
+    -- Basic
+    subject VARCHAR(500) NOT NULL,
+    description TEXT,
+    ticket_number VARCHAR(50) UNIQUE,           -- TKT-0001
+    
+    -- Requester
+    requester_name VARCHAR(255),
+    requester_email VARCHAR(255),
+    requester_phone VARCHAR(20),
+    requester_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+    
+    -- Status
+    status VARCHAR(50) DEFAULT 'open',           -- open, pending, resolved, closed
+    priority VARCHAR(20) DEFAULT 'medium',       -- low, medium, high, urgent
+    urgency VARCHAR(20) DEFAULT 'medium',        -- low, medium, high, critical
+    category VARCHAR(100),                       -- billing, technical, general
+    
+    -- Assignment
+    assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    
+    -- SLA
+    sla_due_at TIMESTAMP,
+    sla_breached BOOLEAN DEFAULT FALSE,
+    first_response_at TIMESTAMP,
+    resolved_at TIMESTAMP,
+    closed_at TIMESTAMP,
+    
+    -- Meta
+    tags JSONB DEFAULT '[]',
+    custom_fields JSONB DEFAULT '{}',
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tickets_tenant ON tickets(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+CREATE INDEX IF NOT EXISTS idx_tickets_priority ON tickets(priority);
+CREATE INDEX IF NOT EXISTS idx_tickets_sla ON tickets(sla_breached);
+CREATE INDEX IF NOT EXISTS idx_tickets_number ON tickets(ticket_number);
+
+-- ============================================================
+-- TICKET MESSAGES (Conversation)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ticket_messages (
+    id SERIAL PRIMARY KEY,
+    ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+    sender_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    sender_type VARCHAR(20) DEFAULT 'agent',    -- agent, customer, system
+    sender_name VARCHAR(255),
+    sender_email VARCHAR(255),
+    message TEXT NOT NULL,
+    is_internal BOOLEAN DEFAULT FALSE,           -- Internal note (not visible to customer)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_ticket ON ticket_messages(ticket_id);
+
+-- ============================================================
+-- TICKET ATTACHMENTS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ticket_attachments (
+    id SERIAL PRIMARY KEY,
+    ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+    message_id INTEGER REFERENCES ticket_messages(id) ON DELETE CASCADE,
+    file_name VARCHAR(255) NOT NULL,
+    file_url VARCHAR(500) NOT NULL,
+    file_size INTEGER,
+    file_type VARCHAR(100),
+    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_attachments ON ticket_attachments(ticket_id);
+
+-- Verify
+\dt tickets
+\dt ticket_messages
+\dt ticket_attachments
+\q
+
+
 
 -- Default roles
 INSERT INTO roles (name, label, level, permissions) VALUES

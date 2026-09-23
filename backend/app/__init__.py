@@ -11,6 +11,8 @@ from app.routes.followup_routes import router as followup_router
 from app.routes.followup_routes import router as task_router
 from app.routes.calendar_routes import router as calendar_router
 from app.routes.meeting_routes import router as meeting_router
+from app.routes.ticket_routes import router as ticket_router
+
 __all__ = [
     "auth_router",
     "lead_router",
@@ -24,6 +26,6 @@ __all__ = [
     "followup_router",
     "task_router",
     "calendar_router",
-    "meeting_router"
-
+    "meeting_router",
+    "ticket_router",
 ]

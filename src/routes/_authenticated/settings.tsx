@@ -490,7 +490,7 @@ function SettingsPage() {
     setSaving(true);
     try {
       const token = localStorage.getItem("access_token");
-      await fetch("http://127.0.0.1:8000/api/auth/me", {
+      await fetch("http://192.168.1.79:8000/api/auth/me", {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",

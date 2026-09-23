@@ -17,6 +17,7 @@ from app.models.Followup import (
 from app.models.task import Task
 from app.models.calendar_event import CalendarEvent
 from app.models.meeting import Meeting
+from app.models.ticket import Ticket, TicketMessage, TicketAttachment
 
 __all__ = [
     "Tenant",
@@ -37,4 +38,7 @@ __all__ = [
     "TaskAttachment",
     "CalendarEvent",
     "Meeting",
+    "Ticket", 
+    "TicketMessage",
+    "TicketAttachment"
 ]
