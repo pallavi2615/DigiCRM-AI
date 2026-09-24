@@ -10,12 +10,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -61,10 +62,12 @@ interface ImportResult {
   errors: unknown[];
 }
 
-const empty = { first_name: "", last_name: "", email: "", phone: "", designation: "", company_id: "", notes: "" };
+const empty = { first_name: "", last_name: "", email: "", phone: "", designation: "", linkedin_url: "", company_id: "", notes: "" };
 
 // FastAPI/Pydantic rejects "" for typed fields like EmailStr, so send null instead.
 const nullIfEmpty = (v: string) => (v.trim() === "" ? null : v.trim());
+
+const contactName = (c: Contact) => `${c.first_name} ${c.last_name ?? ""}`.trim();
 
 function ContactsPage() {
   const perms = usePermissions();
@@ -80,6 +83,7 @@ function ContactsPage() {
   const [companyFilter, setCompanyFilter] = useState<string>("all");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Contact | null>(null);
+  const [viewing, setViewing] = useState<Contact | null>(null);
   const [form, setForm] = useState(empty);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -111,6 +115,9 @@ function ContactsPage() {
       );
   }, [allContacts, search, companyFilter]);
 
+  const companyName = (id: number | null | undefined) =>
+    id != null ? companies?.find((c) => c.id === id)?.name ?? null : null;
+
   const save = useMutation({
     mutationFn: async () => {
       if (!form.first_name.trim()) throw new Error("First name is required");
@@ -120,6 +127,7 @@ function ContactsPage() {
         email: nullIfEmpty(form.email),
         phone: nullIfEmpty(form.phone),
         designation: nullIfEmpty(form.designation),
+        linkedin_url: nullIfEmpty(form.linkedin_url),
         company_id: form.company_id ? Number(form.company_id) : null,
         notes: nullIfEmpty(form.notes),
         // keep values the form doesn't edit so a PUT doesn't wipe them
@@ -173,14 +181,14 @@ function ContactsPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  // Opening an existing record without edit rights shows it read-only.
-  const viewOnly = !!editing && !canEdit;
-
+  // Edit form (only reachable with edit rights)
   const openEdit = (c: Contact) => {
+    if (!canEdit) return;
     setEditing(c);
     setForm({
       first_name: c.first_name, last_name: c.last_name ?? "", email: c.email ?? "",
       phone: c.phone ?? "", designation: c.designation ?? "",
+      linkedin_url: c.linkedin_url ?? "",
       company_id: c.company_id != null ? String(c.company_id) : "",
       notes: c.notes ?? "",
     });
@@ -257,10 +265,10 @@ function ContactsPage() {
                   </TableCell></TableRow>
                 )}
                 {contacts.slice((page - 1) * pageSize, page * pageSize).map(c => {
-                  const name = `${c.first_name} ${c.last_name ?? ""}`.trim();
+                  const name = contactName(c);
                   const initials = ((c.first_name?.[0] ?? "") + (c.last_name?.[0] ?? "")).toUpperCase();
                   return (
-                    <TableRow key={c.id} data-testid="contact-row" data-contact-id={c.id} className="cursor-pointer" onClick={() => openEdit(c)}>
+                    <TableRow key={c.id} data-testid="contact-row" data-contact-id={c.id} className="cursor-pointer" onClick={() => setViewing(c)}>
                       <TableCell>
                         <div className="flex items-center gap-3">
                           <Avatar className="h-9 w-9"><AvatarFallback className="bg-primary/10 text-primary text-xs">{initials}</AvatarFallback></Avatar>
@@ -271,20 +279,14 @@ function ContactsPage() {
                       <TableCell className="text-sm">{c.email ? <span className="flex items-center gap-1.5"><Mail className="h-3 w-3" />{c.email}</span> : "—"}</TableCell>
                       <TableCell className="text-sm">{c.phone ? <span className="flex items-center gap-1.5"><Phone className="h-3 w-3" />{c.phone}</span> : "—"}</TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        {canEdit || canDelete ? (
-                            <DropdownMenu>
-                            <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreVertical className="h-4 w-4" /></Button></DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              {canEdit && <DropdownMenuItem onClick={() => openEdit(c)}><Pencil className="mr-2 h-4 w-4" /> Edit</DropdownMenuItem>}
-                              {canDelete && <DropdownMenuItem className="text-destructive" onClick={() => del.mutate(c.id)}><Trash2 className="mr-2 h-4 w-4" /> Delete</DropdownMenuItem>}
-                              {!canEdit && <DropdownMenuItem onClick={() => openEdit(c)}><Eye className="mr-2 h-4 w-4" /> View</DropdownMenuItem>}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        ) : (
-                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="View" title="View" onClick={() => openEdit(c)}>
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                        )}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreVertical className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => setViewing(c)}><Eye className="mr-2 h-4 w-4" /> View</DropdownMenuItem>
+                            {canEdit && <DropdownMenuItem onClick={() => openEdit(c)}><Pencil className="mr-2 h-4 w-4" /> Edit</DropdownMenuItem>}
+                            {canDelete && <DropdownMenuItem className="text-destructive" onClick={() => del.mutate(c.id)}><Trash2 className="mr-2 h-4 w-4" /> Delete</DropdownMenuItem>}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </TableCell>
                     </TableRow>
                   );
@@ -318,10 +320,90 @@ function ContactsPage() {
         </CardContent>
       </Card>
 
+      {/* View Contact Dialog (read-only) */}
+      <Dialog open={!!viewing} onOpenChange={(o) => { if (!o) setViewing(null); }}>
+        <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+          {viewing && (
+            <>
+              <DialogHeader>
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-11 w-11">
+                    <AvatarFallback className="bg-primary/10 text-primary text-sm">
+                      {((viewing.first_name?.[0] ?? "") + (viewing.last_name?.[0] ?? "")).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0">
+                    <DialogTitle className="truncate">{contactName(viewing)}</DialogTitle>
+                    <DialogDescription>
+                      {[viewing.designation, companyName(viewing.company_id)].filter(Boolean).join(" · ") || "Contact details"}
+                    </DialogDescription>
+                  </div>
+                </div>
+              </DialogHeader>
+
+              {viewing.status && (
+                <div>
+                  <Badge variant="outline" className="capitalize">{viewing.status}</Badge>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-2">
+                <DetailRow label="Email" value={viewing.email} />
+                <DetailRow label="Phone" value={viewing.phone} />
+                <DetailRow label="Company" value={companyName(viewing.company_id)} />
+                <DetailRow label="Designation" value={viewing.designation} />
+                <div className="min-w-0">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide">LinkedIn</div>
+                  <div className="text-sm mt-1 wrap-break-word">
+                    {viewing.linkedin_url ? (
+                      <a
+                        href={/^https?:\/\//i.test(viewing.linkedin_url) ? viewing.linkedin_url : `https://${viewing.linkedin_url}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline"
+                      >
+                        {viewing.linkedin_url}
+                      </a>
+                    ) : "—"}
+                  </div>
+                </div>
+                <DetailRow
+                  label="Created"
+                  value={viewing.created_at
+                    ? new Date(viewing.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                    : null}
+                />
+                {viewing.tags && viewing.tags.length > 0 && (
+                  <div className="col-span-2">
+                    <div className="text-xs text-muted-foreground uppercase tracking-wide">Tags</div>
+                    <div className="flex gap-1.5 flex-wrap mt-1">
+                      {viewing.tags.map((t) => <Badge key={t} variant="secondary">{t}</Badge>)}
+                    </div>
+                  </div>
+                )}
+                <div className="col-span-2">
+                  <DetailRow label="Notes" value={viewing.notes} />
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setViewing(null)}>Close</Button>
+                {canEdit && (
+                  <Button onClick={() => { const c = viewing; setViewing(null); openEdit(c); }}>
+                    <Pencil className="mr-2 h-4 w-4" /> Edit
+                  </Button>
+                )}
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Create / Edit Contact Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-xl">
-          <DialogHeader><DialogTitle>{editing ? (canEdit ? "Edit contact" : "View contact") : "New contact"}</DialogTitle></DialogHeader>
-          <fieldset disabled={viewOnly} className="grid grid-cols-2 gap-4 py-2 min-w-0">
+          <DialogHeader><DialogTitle>{editing ? "Edit contact" : "New contact"}</DialogTitle></DialogHeader>
+          <div className="grid grid-cols-2 gap-4 py-2 min-w-0">
             <div className="space-y-1.5"><Label>First Name *</Label><Input value={form.first_name} onChange={(e) => setForm({...form, first_name: e.target.value})} /></div>
             <div className="space-y-1.5"><Label>Last Name</Label><Input value={form.last_name} onChange={(e) => setForm({...form, last_name: e.target.value})} /></div>
             <div className="space-y-1.5"><Label>Email</Label><Input type="email" value={form.email} onChange={(e) => setForm({...form, email: e.target.value})} /></div>
@@ -337,16 +419,24 @@ function ContactsPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="col-span-2 space-y-1.5"><Label>LinkedIn</Label><Input type="url" placeholder="https://www.linkedin.com/in/username" value={form.linkedin_url} onChange={(e) => setForm({...form, linkedin_url: e.target.value})} /></div>
             <div className="col-span-2 space-y-1.5"><Label>Notes</Label><Textarea rows={3} value={form.notes} onChange={(e) => setForm({...form, notes: e.target.value})} /></div>
-          </fieldset>
+          </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>{viewOnly ? "Close" : "Cancel"}</Button>
-            {!viewOnly && (
-              <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{editing ? "Save" : "Create"}</Button>
-            )}
+            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{editing ? "Save" : "Create"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
+      <div className="text-sm mt-1 wrap-break-word whitespace-pre-wrap">{value || "—"}</div>
     </div>
   );
 }

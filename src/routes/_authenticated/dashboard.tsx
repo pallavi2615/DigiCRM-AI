@@ -695,6 +695,7 @@ const KPI_WIDGETS: KpiSpec[] = [
     get: (k) => String(k?.tasksToday ?? 0),
     icon: CheckSquare,
     to: "/tasks",
+    search: { filter: "today" },
   },
 ];
 

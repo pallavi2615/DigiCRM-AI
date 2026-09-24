@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { apiFetch, apiUpload } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { Card, CardContent } from "@/components/ui/card";
@@ -25,6 +25,9 @@ import { toast } from "sonner";
 import { DatePicker } from "@/components/ui/datetime-picker";
 
 export const Route = createFileRoute("/_authenticated/tasks")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    filter: (search.filter as string) || "all",
+  }),
   head: () => ({
     meta: [
       { title: "Tasks — DigiCRM AI" },
@@ -125,15 +128,19 @@ function formatFileSize(bytes: number) {
 function TasksPage() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { filter: filterParam } = Route.useSearch();
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<TaskCreatePayload>(empty);
-  const [filter, setFilter] = useState<string>("all");
+  const [filter, setFilter] = useState<string>(filterParam ?? "all");
   const [detailId, setDetailId] = useState<number | null>(null);
 
   // ⭐ Attachment state (for new task)
   const [pickedFiles, setPickedFiles] = useState<File[]>([]);
 
+  useEffect(() => {
+    if (filterParam) setFilter(filterParam);
+  }, [filterParam]);
   // -------- Fetch tasks --------
   const { data: tasks, isLoading } = useQuery({
     queryKey: ["tasks", filter],
@@ -144,6 +151,12 @@ function TasksPage() {
       const query = params.toString();
       return apiFetch<Task[]>(`/api/v1/tasks${query ? `?${query}` : ""}`);
     },
+  });
+  const visibleTasks = (tasks ?? []).filter((t) => {
+    if (filter !== "today") return true;
+    if (!t.due_date) return false;
+    const today = new Date().toISOString().split("T")[0];
+    return t.due_date.startsWith(today);
   });
 
   const detail = (tasks ?? []).find((t) => t.id === detailId) ?? null;
@@ -354,6 +367,7 @@ function TasksPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All</SelectItem>
+               <SelectItem value="today">Today</SelectItem>
               <SelectItem value="open">Open</SelectItem>
               <SelectItem value="done">Completed</SelectItem>
             </SelectContent>
@@ -372,17 +386,17 @@ function TasksPage() {
             </div>
           )}
 
-          {!isLoading && (tasks?.length ?? 0) === 0 && (
+         {!isLoading && visibleTasks.length === 0 && (
             <div className="text-center py-16">
               <CheckSquare className="h-10 w-10 mx-auto text-muted-foreground mb-2" />
               <p className="text-sm text-muted-foreground">
-                No tasks. Create your first one.
+                {filter === "today" ? "No tasks due today." : "No tasks. Create your first one."}
               </p>
             </div>
           )}
 
           <div className="space-y-2">
-            {tasks?.map((t) => {
+            {visibleTasks?.map((t) => {
               const done = t.status === "completed";
               const overdue =
                 t.due_date && new Date(t.due_date) < new Date() && !done;

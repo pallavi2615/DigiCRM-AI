@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch, apiUpload, apiDownload } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -29,12 +29,29 @@ import {
 import { Badge } from "@/components/ui/badge";
 import {
   Loader2, Users, RefreshCw, Plus, Trash2, Upload, Download,
-  MoreVertical, Link2,
+  MoreVertical, Link2, Eye, Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 
+const VALID_STATUSES = [
+  "new",
+  "contacted",
+  "qualified",
+  "proposal_sent",
+  "won",
+  "lost",
+];
+
 export const Route = createFileRoute("/_authenticated/leads")({
   head: () => ({ meta: [{ title: "Leads — DigiCRM AI" }] }),
+  // Lets dashboard cards link to /leads?status=qualified|won|lost
+  validateSearch: (search: Record<string, unknown>): { status?: string } => ({
+    status:
+      typeof search.status === "string" &&
+      VALID_STATUSES.includes(search.status)
+        ? search.status
+        : undefined,
+  }),
   component: LeadsPage,
 });
 
@@ -57,6 +74,9 @@ interface Lead {
   estimated_value: string | number;
   assigned_to: number | null;
   contact_id?: number | null;
+  industry?: string | null;
+  city?: string | null;
+  country?: string | null;
   score: number;
   custom_fields: Record<string, any>;
   created_at: string;
@@ -79,6 +99,7 @@ interface ContactLite {
   email: string | null;
   phone: string | null;
   designation: string | null;
+  company_id?: number | null;
 }
 
 // Minimal shape returned by GET /api/v1/companies
@@ -102,6 +123,9 @@ interface CreateLeadPayload {
   email: string;
   phone: string;
   company: string;
+  industry: string;
+  city: string;
+  country: string;
   designation: string;
   message: string;
   source: string;
@@ -114,6 +138,9 @@ interface UpdateLeadPayload {
   email: string;
   phone: string;
   company: string;
+  industry: string;
+  city: string;
+  country: string;
   designation: string;
   message: string;
   status: string;
@@ -151,6 +178,9 @@ const emptyForm: CreateLeadPayload = {
   email: "",
   phone: "",
   company: "",
+  industry: "",
+  city: "",
+  country: "",
   designation: "",
   message: "",
   source: "manual",
@@ -166,13 +196,56 @@ function getLeadAmount(lead: Lead): number {
   return 0;
 }
 
-function toUpdatePayload(lead: Lead): UpdateLeadPayload {
+// The list endpoint may not return every field (company, designation, ...).
+// Fill the gaps from company_name / custom_fields.
+function resolveLead(lead: Lead): Lead {
+  const cf = lead.custom_fields ?? {};
+  return {
+    ...lead,
+    company: lead.company || lead.company_name || cf.company || null,
+    designation: lead.designation || cf.designation || null,
+    custom_fields: cf,
+  };
+}
+
+function getExtra(lead: Lead, key: "industry" | "city" | "country"): string {
+  const v = lead[key] ?? lead.custom_fields?.[key];
+  return typeof v === "string" ? v : "";
+}
+
+// Load the full lead (+ designation from the linked contact if missing).
+async function fetchLeadDetail(lead: Lead): Promise<Lead> {
+  let full: Lead = lead;
+  try {
+    const detail = await apiFetch<Lead>(`/api/v1/leads/${lead.id}`);
+    full = { ...lead, ...detail };
+  } catch {
+    // fall back to the row we already have
+  }
+  full = resolveLead(full);
+
+  if (!full.designation && full.contact_id) {
+    try {
+      const c = await apiFetch<ContactLite>(`/api/v1/contacts/${full.contact_id}`);
+      if (c?.designation) full = { ...full, designation: c.designation };
+    } catch {
+      // ignore
+    }
+  }
+  return full;
+}
+
+function toUpdatePayload(input: Lead): UpdateLeadPayload {
+  const lead = resolveLead(input);
   const amount = getLeadAmount(lead);
   return {
     name: lead.name ?? "",
     email: lead.email ?? "",
     phone: lead.phone ?? "",
     company: lead.company ?? "",
+    industry: getExtra(lead, "industry"),
+    city: getExtra(lead, "city"),
+    country: getExtra(lead, "country"),
     designation: lead.designation ?? "",
     message: lead.message ?? "",
     status: lead.status ?? "new",
@@ -212,7 +285,10 @@ const currencyFormatter = new Intl.NumberFormat("en-IN", {
 // Matches the POST /api/v1/companies schema:
 //   name (required), industry, location, employees, revenue, website,
 //   phone, email, notes, logo_url, owner_id, tags, status
-async function mirrorLeadToCompany(lead: Lead): Promise<number | null> {
+async function mirrorLeadToCompany(
+  lead: Lead,
+  extras?: { industry?: string; city?: string; country?: string }
+): Promise<number | null> {
   const name = (lead.company || lead.company_name || "").trim();
   if (!name) return null;
 
@@ -240,6 +316,12 @@ async function mirrorLeadToCompany(lead: Lead): Promise<number | null> {
     status: "active",
   };
   if (lead.message?.trim()) payload.notes = lead.message.trim();
+  if (extras?.industry?.trim()) payload.industry = extras.industry.trim();
+  // Companies API has a single `location` field → "City, Country"
+  const location = [extras?.city?.trim(), extras?.country?.trim()]
+    .filter(Boolean)
+    .join(", ");
+  if (location) payload.location = location;
 
   const created = await apiFetch<CompanyLite>("/api/v1/companies", {
     method: "POST",
@@ -251,10 +333,13 @@ async function mirrorLeadToCompany(lead: Lead): Promise<number | null> {
 // ⭐ Mirror a freshly-created lead into the contacts table so it shows up
 // on the Contacts page. Matches the POST /api/v1/contacts schema:
 //   - email is required (EmailStr) → skip mirroring if the lead has none
-//   - company_id is an int     → omit it entirely (lead only has free-text company)
+//   - company_id is an int     → the id from mirrorLeadToCompany (omitted if none)
 //   - optional strings         → omit when empty rather than sending null
 //   - tags/status              → send defaults so nothing is rejected
-async function mirrorLeadToContact(lead: Lead): Promise<void> {
+async function mirrorLeadToContact(
+  lead: Lead,
+  companyId?: number | null
+): Promise<void> {
   const email = lead.email?.trim() || null;
   const phone = lead.phone?.trim() || null;
 
@@ -273,10 +358,19 @@ async function mirrorLeadToContact(lead: Lead): Promise<void> {
     existing = [];
   }
 
-  const alreadyExists = existing.some(
+  const match = existing.find(
     (c) => c.email?.toLowerCase() === email.toLowerCase()
   );
-  if (alreadyExists) return;
+  if (match) {
+    // Contact already exists — just link the company if it has none yet.
+    if (companyId && !match.company_id) {
+      await apiFetch(`/api/v1/contacts/${match.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ company_id: companyId }),
+      });
+    }
+    return;
+  }
 
   // Split "neha sharma" → first_name "neha", last_name "sharma"
   const fullName = (lead.name || "").trim();
@@ -293,6 +387,7 @@ async function mirrorLeadToContact(lead: Lead): Promise<void> {
   if (phone) payload.phone = phone;
   if (lead.designation?.trim()) payload.designation = lead.designation.trim();
   if (lead.message?.trim()) payload.notes = lead.message.trim();
+  if (companyId) payload.company_id = companyId;
 
   await apiFetch("/api/v1/contacts", {
     method: "POST",
@@ -309,7 +404,13 @@ function LeadsPage() {
   const canWrite = !isSuperadmin;
 
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  // ?status=qualified|won|lost coming from Dashboard KPI cards
+  const { status: urlStatus } = Route.useSearch();
+  const [statusFilter, setStatusFilter] = useState(urlStatus ?? "all");
+  useEffect(() => {
+    setStatusFilter(urlStatus ?? "all");
+    setPage(0);
+  }, [urlStatus]);
   const [priorityFilter, setPriorityFilter] = useState("all");
   const [tenantFilter, setTenantFilter] = useState("all");
   const [page, setPage] = useState(0);
@@ -317,6 +418,8 @@ function LeadsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState<CreateLeadPayload>(emptyForm);
 
+  const [viewingLead, setViewingLead] = useState<Lead | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
   const [editingLead, setEditingLead] = useState<Lead | null>(null);
   const [editForm, setEditForm] = useState<UpdateLeadPayload | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -380,23 +483,47 @@ function LeadsPage() {
       const numericValue = toNumber(payload.value);
 
       // 1. Create the lead
-      const newLead = await apiFetch<Lead>("/api/v1/leads", {
+      const created = await apiFetch<Lead>("/api/v1/leads", {
         method: "POST",
         body: JSON.stringify({
           ...payload,
           estimated_value: numericValue,
+          custom_fields: {
+            company: payload.company.trim(),
+            designation: payload.designation.trim(),
+            industry: payload.industry.trim(),
+            city: payload.city.trim(),
+            country: payload.country.trim(),
+          },
         }),
       });
 
+      // Backend response may omit some fields — fall back to what was typed.
+      const newLead: Lead = {
+        ...created,
+        name: created.name || payload.name || null,
+        email: created.email || payload.email || null,
+        phone: created.phone || payload.phone || null,
+        company: created.company || payload.company || null,
+        designation: created.designation || payload.designation || null,
+        message: created.message || payload.message || null,
+      };
+
       // 2. Mirror into companies + contacts so they show on their pages.
       //    Best-effort: never fail the lead creation if these error.
+      let companyId: number | null = null;
       try {
-        await mirrorLeadToCompany(newLead);
+        companyId = await mirrorLeadToCompany(newLead, {
+          industry: payload.industry,
+          city: payload.city,
+          country: payload.country,
+        });
       } catch (err) {
         console.error("[leads] failed to mirror into companies:", err);
       }
       try {
-        await mirrorLeadToContact(newLead);
+        // company goes first so the contact can be linked to it (company_id)
+        await mirrorLeadToContact(newLead, companyId);
       } catch (err) {
         console.error("[leads] failed to mirror into contacts:", err);
       }
@@ -439,23 +566,49 @@ function LeadsPage() {
     mutationFn: async ({
       id,
       payload,
+      customFields,
     }: {
       id: number;
       payload: UpdateLeadPayload;
+      customFields?: Record<string, any>;
     }) => {
       const numericValue = toNumber(payload.value);
 
-      const updated = await apiFetch<Lead>(`/api/v1/leads/${id}`, {
+      const saved = await apiFetch<Lead>(`/api/v1/leads/${id}`, {
         method: "PUT",
         body: JSON.stringify({
           ...payload,
           estimated_value: numericValue,
+          custom_fields: {
+            ...(customFields ?? {}),
+            company: payload.company.trim(),
+            designation: payload.designation.trim(),
+            industry: payload.industry.trim(),
+            city: payload.city.trim(),
+            country: payload.country.trim(),
+          },
         }),
       });
 
+      // Backend response may omit some fields — fall back to what was typed.
+      const updated: Lead = {
+        ...saved,
+        name: saved.name || payload.name || null,
+        email: saved.email || payload.email || null,
+        phone: saved.phone || payload.phone || null,
+        company: saved.company || payload.company || null,
+        designation: saved.designation || payload.designation || null,
+        message: saved.message || payload.message || null,
+      };
+
       // Best-effort company sync (creates the company if it's new)
+      let companyId: number | null = null;
       try {
-        await mirrorLeadToCompany(updated);
+        companyId = await mirrorLeadToCompany(updated, {
+          industry: payload.industry,
+          city: payload.city,
+          country: payload.country,
+        });
       } catch (err) {
         console.error("[leads] failed to sync company:", err);
       }
@@ -475,6 +628,7 @@ function LeadsPage() {
           if (updated.designation?.trim())
             contactPayload.designation = updated.designation.trim();
           if (updated.message?.trim()) contactPayload.notes = updated.message.trim();
+          if (companyId) contactPayload.company_id = companyId;
 
           await apiFetch(`/api/v1/contacts/${updated.contact_id}`, {
             method: "PUT",
@@ -482,7 +636,7 @@ function LeadsPage() {
           });
         } else {
           // No contact yet — try to create one now
-          await mirrorLeadToContact(updated);
+          await mirrorLeadToContact(updated, companyId);
         }
       } catch (err) {
         console.error("[leads] failed to sync contact:", err);
@@ -589,6 +743,22 @@ function LeadsPage() {
     setEditForm(toUpdatePayload(lead));
   };
 
+  // Row click → read-only card. Loads the full record in the background.
+  const openViewDialog = async (lead: Lead) => {
+    setViewingLead(resolveLead(lead));
+    setViewLoading(true);
+    const full = await fetchLeadDetail(lead);
+    setViewingLead((cur) => (cur && cur.id === lead.id ? full : cur));
+    setViewLoading(false);
+  };
+
+  // Edit from the kebab menu (skips the read-only card)
+  const openEditFromRow = async (lead: Lead) => {
+    if (!canWrite) return;
+    const full = await fetchLeadDetail(lead);
+    openEditDialog(full);
+  };
+
   const closeEditDialog = () => {
     setEditingLead(null);
     setEditForm(null);
@@ -597,7 +767,11 @@ function LeadsPage() {
   const handleUpdateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canWrite || !editingLead || !editForm) return;
-    updateLead.mutate({ id: editingLead.id, payload: editForm });
+    updateLead.mutate({
+      id: editingLead.id,
+      payload: editForm,
+      customFields: editingLead.custom_fields,
+    });
   };
 
   const handleDeleteConfirmed = () => {
@@ -700,10 +874,15 @@ function LeadsPage() {
                   Create Lead
                 </Button>
               </DialogTrigger>
-              <DialogContent className="sm:max-w-md">
+              <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
                 <form onSubmit={handleCreateSubmit}>
                   <DialogHeader>
                     <DialogTitle>Create Lead</DialogTitle>
+                    <DialogDescription>
+                      Add a new lead manually. A company is created
+                      automatically if a company name is provided, and a
+                      contact is created if an email is provided.
+                    </DialogDescription>
                   </DialogHeader>
 
                   <div className="grid gap-4 py-4">
@@ -754,6 +933,44 @@ function LeadsPage() {
                             setForm((f) => ({ ...f, company: e.target.value }))
                           }
                           placeholder="Acme Inc."
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="grid gap-2">
+                        <Label htmlFor="industry">Industry</Label>
+                        <Input
+                          id="industry"
+                          value={form.industry}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, industry: e.target.value }))
+                          }
+                          placeholder="e.g. IT"
+                        />
+                      </div>
+
+                      <div className="grid gap-2">
+                        <Label htmlFor="city">City</Label>
+                        <Input
+                          id="city"
+                          value={form.city}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, city: e.target.value }))
+                          }
+                          placeholder="e.g. Noida"
+                        />
+                      </div>
+
+                      <div className="grid gap-2">
+                        <Label htmlFor="country">Country</Label>
+                        <Input
+                          id="country"
+                          value={form.country}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, country: e.target.value }))
+                          }
+                          placeholder="e.g. India"
                         />
                       </div>
                     </div>
@@ -995,8 +1212,8 @@ function LeadsPage() {
                   return (
                     <TableRow
                       key={lead.id}
-                      className={`hover:bg-muted/30 ${canWrite ? "cursor-pointer" : ""}`}
-                      onClick={canWrite ? () => openEditDialog(lead) : undefined}
+                      className="hover:bg-muted/30 cursor-pointer"
+                      onClick={() => openViewDialog(lead)}
                     >
                       <TableCell className="font-medium">
                         <div>{lead.name || "—"}</div>
@@ -1062,6 +1279,14 @@ function LeadsPage() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => openViewDialog(lead)}>
+                                <Eye className="mr-2 h-4 w-4" />
+                                View
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => openEditFromRow(lead)}>
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Edit
+                              </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => setAttachFor(lead)}>
                                 <Link2 className="mr-2 h-4 w-4" />
                                 Attach Follow-up
@@ -1106,6 +1331,105 @@ function LeadsPage() {
         </CardContent>
       </Card>
 
+      {/* View Lead Dialog (read-only) */}
+      <Dialog
+        open={!!viewingLead}
+        onOpenChange={(open) => {
+          if (!open) setViewingLead(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+          {viewingLead && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  {viewingLead.name || "Lead"}
+                  {viewLoading && (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  )}
+                </DialogTitle>
+                <DialogDescription>
+                  {[viewingLead.designation, viewingLead.company]
+                    .filter(Boolean)
+                    .join(" · ") || "Lead details"}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="flex gap-2">
+                <Badge
+                  className={`${
+                    statusColors[viewingLead.status] || "bg-gray-100 text-gray-700"
+                  } border-0 capitalize`}
+                >
+                  {viewingLead.status.replace("_", " ")}
+                </Badge>
+                <Badge
+                  className={`${
+                    priorityColors[viewingLead.priority] ||
+                    "bg-gray-100 text-gray-700"
+                  } border-0 capitalize`}
+                >
+                  {viewingLead.priority || "—"}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-2">
+                <DetailRow label="Email" value={viewingLead.email} />
+                <DetailRow label="Phone" value={viewingLead.phone} />
+                <DetailRow label="Company" value={viewingLead.company} />
+                <DetailRow label="Designation" value={viewingLead.designation} />
+                <DetailRow label="Industry" value={getExtra(viewingLead, "industry")} />
+                <DetailRow
+                  label="Location"
+                  value={[getExtra(viewingLead, "city"), getExtra(viewingLead, "country")]
+                    .filter(Boolean)
+                    .join(", ")}
+                />
+                <DetailRow label="Source" value={viewingLead.source} />
+                <DetailRow
+                  label="Value"
+                  value={
+                    getLeadAmount(viewingLead) > 0
+                      ? currencyFormatter.format(getLeadAmount(viewingLead))
+                      : null
+                  }
+                />
+                <DetailRow
+                  label="Created"
+                  value={new Date(viewingLead.created_at).toLocaleDateString("en-IN", {
+                    day: "2-digit",
+                    month: "short",
+                    year: "numeric",
+                  })}
+                />
+                <div className="col-span-2">
+                  <DetailRow label="Message" value={viewingLead.message} />
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setViewingLead(null)}>
+                  Close
+                </Button>
+                {canWrite && (
+                  <Button
+                    disabled={viewLoading}
+                    onClick={() => {
+                      const lead = viewingLead;
+                      setViewingLead(null);
+                      openEditDialog(lead);
+                    }}
+                  >
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Edit
+                  </Button>
+                )}
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Edit Lead Dialog */}
       <Dialog
         open={!!editingLead}
@@ -1113,7 +1437,7 @@ function LeadsPage() {
           if (!open) closeEditDialog();
         }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           {editingLead && editForm && (
             <form onSubmit={handleUpdateSubmit}>
               <DialogHeader>
@@ -1168,6 +1492,44 @@ function LeadsPage() {
                         setEditForm((f) => f && { ...f, company: e.target.value })
                       }
                       placeholder="Acme Inc."
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-industry">Industry</Label>
+                    <Input
+                      id="edit-industry"
+                      value={editForm.industry}
+                      onChange={(e) =>
+                        setEditForm((f) => f && { ...f, industry: e.target.value })
+                      }
+                      placeholder="e.g. IT"
+                    />
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-city">City</Label>
+                    <Input
+                      id="edit-city"
+                      value={editForm.city}
+                      onChange={(e) =>
+                        setEditForm((f) => f && { ...f, city: e.target.value })
+                      }
+                      placeholder="e.g. Noida"
+                    />
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-country">Country</Label>
+                    <Input
+                      id="edit-country"
+                      value={editForm.country}
+                      onChange={(e) =>
+                        setEditForm((f) => f && { ...f, country: e.target.value })
+                      }
+                      placeholder="e.g. India"
                     />
                   </div>
                 </div>
@@ -1484,5 +1846,24 @@ function StatCard({
         <div className={`text-2xl font-bold mt-1 ${color}`}>{value}</div>
       </CardContent>
     </Card>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+}: {
+  label: string;
+  value?: string | null;
+}) {
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground uppercase tracking-wide">
+        {label}
+      </div>
+      <div className="text-sm mt-1 wrap-break-word whitespace-pre-wrap">
+        {value || "—"}
+      </div>
+    </div>
   );
 }

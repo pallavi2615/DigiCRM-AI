@@ -14,7 +14,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -84,6 +84,11 @@ const writeKeys: Record<AliasField, string> = {
   annual_revenue: ALIASES.annual_revenue[0],
 };
 
+// True when the API only has a single `location` string (no separate country).
+// Then we show it as City + Country in the UI ("Noida, India" → Noida / India)
+// and join them back into one string when saving.
+let combinedLocation = false;
+
 function normalize(row: Record<string, unknown>): Company {
   const out: Record<string, unknown> = { ...row };
   for (const field of Object.keys(ALIASES) as AliasField[]) {
@@ -91,10 +96,36 @@ function normalize(row: Record<string, unknown>): Company {
     if (found) writeKeys[field] = found;
     out[field] = found ? row[found] : null;
   }
+
+  const hasCountryKey = ALIASES.country.some((k) => row[k] !== undefined);
+  if (row.location !== undefined && !hasCountryKey) {
+    combinedLocation = true;
+    writeKeys.city = "location";
+    const raw = row.location ? String(row.location) : "";
+    const idx = raw.lastIndexOf(",");
+    if (idx >= 0) {
+      out.city = raw.slice(0, idx).trim() || null;
+      out.country = raw.slice(idx + 1).trim() || null;
+    } else {
+      out.city = raw.trim() || null;
+      out.country = null;
+    }
+  }
   return out as unknown as Company;
 }
 
 function toPayload(form: typeof empty) {
+  const location = combinedLocation
+    ? {
+        [writeKeys.city]: nullIfEmpty(
+          [form.city.trim(), form.country.trim()].filter(Boolean).join(", "),
+        ),
+      }
+    : {
+        [writeKeys.city]: nullIfEmpty(form.city),
+        [writeKeys.country]: nullIfEmpty(form.country),
+      };
+
   return {
     name: form.name.trim(),
     industry: nullIfEmpty(form.industry),
@@ -104,10 +135,14 @@ function toPayload(form: typeof empty) {
     notes: nullIfEmpty(form.notes),
     [writeKeys.employee_count]: Number(form.employee_count) || null,
     [writeKeys.annual_revenue]: Number(form.annual_revenue) || null,
-    [writeKeys.city]: nullIfEmpty(form.city),
-    [writeKeys.country]: nullIfEmpty(form.country),
+    ...location,
   };
 }
+
+const formatRevenue = (v: unknown) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? `$${n.toLocaleString()}` : null;
+};
 
 function CompaniesPage() {
   const perms = usePermissions();
@@ -122,6 +157,7 @@ function CompaniesPage() {
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Company | null>(null);
+  const [viewing, setViewing] = useState<Company | null>(null);
   const [form, setForm] = useState(empty);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -204,10 +240,9 @@ function CompaniesPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  // Opening an existing record without edit rights shows it read-only.
-  const viewOnly = !!editing && !canEdit;
-
+  // Edit form (only reachable with edit rights)
   const openEdit = (c: Company) => {
+    if (!canEdit) return;
     setEditing(c);
     setForm({
       name: c.name, industry: c.industry ?? "", website: c.website ?? "",
@@ -274,7 +309,7 @@ function CompaniesPage() {
                   </TableCell></TableRow>
                 )}
                 {companies.slice((currentPage - 1) * pageSize, currentPage * pageSize).map(c => (
-                  <TableRow key={c.id} className="cursor-pointer" onClick={() => openEdit(c)}>
+                  <TableRow key={c.id} className="cursor-pointer" onClick={() => setViewing(c)}>
                     <TableCell>
                       <div className="font-medium">{c.name}</div>
                       {c.website && <div className="text-xs text-muted-foreground flex items-center gap-1"><Globe className="h-3 w-3" />{c.website}</div>}
@@ -282,22 +317,16 @@ function CompaniesPage() {
                     <TableCell className="text-muted-foreground">{c.industry || "—"}</TableCell>
                     <TableCell className="text-sm">{[c.city, c.country].filter(Boolean).join(", ") || "—"}</TableCell>
                     <TableCell>{c.employee_count || "—"}</TableCell>
-                    <TableCell>{c.annual_revenue ? `$${Number(c.annual_revenue).toLocaleString()}` : "—"}</TableCell>
+                    <TableCell>{formatRevenue(c.annual_revenue) ?? "—"}</TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
-                      {canEdit || canDelete ? (
-                          <DropdownMenu>
-                          <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreVertical className="h-4 w-4" /></Button></DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            {canEdit && <DropdownMenuItem onClick={() => openEdit(c)}><Pencil className="mr-2 h-4 w-4" /> Edit</DropdownMenuItem>}
-                            {canDelete && <DropdownMenuItem className="text-destructive" onClick={() => del.mutate(c.id)}><Trash2 className="mr-2 h-4 w-4" /> Delete</DropdownMenuItem>}
-                            {!canEdit && <DropdownMenuItem onClick={() => openEdit(c)}><Eye className="mr-2 h-4 w-4" /> View</DropdownMenuItem>}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      ) : (
-                        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="View" title="View" onClick={() => openEdit(c)}>
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                      )}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreVertical className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => setViewing(c)}><Eye className="mr-2 h-4 w-4" /> View</DropdownMenuItem>
+                          {canEdit && <DropdownMenuItem onClick={() => openEdit(c)}><Pencil className="mr-2 h-4 w-4" /> Edit</DropdownMenuItem>}
+                          {canDelete && <DropdownMenuItem className="text-destructive" onClick={() => del.mutate(c.id)}><Trash2 className="mr-2 h-4 w-4" /> Delete</DropdownMenuItem>}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -330,10 +359,65 @@ function CompaniesPage() {
         </CardContent>
       </Card>
 
+      {/* View Company Dialog (read-only) */}
+      <Dialog open={!!viewing} onOpenChange={(o) => { if (!o) setViewing(null); }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          {viewing && (
+            <>
+              <DialogHeader>
+                <div className="flex items-center gap-3">
+                  <div className="h-11 w-11 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                    <Building2 className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <DialogTitle className="truncate">{viewing.name}</DialogTitle>
+                    <DialogDescription>
+                      {[viewing.industry, [viewing.city, viewing.country].filter(Boolean).join(", ")]
+                        .filter(Boolean)
+                        .join(" · ") || "Company details"}
+                    </DialogDescription>
+                  </div>
+                </div>
+              </DialogHeader>
+
+              <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-2">
+                <DetailRow label="Industry" value={viewing.industry} />
+                <DetailRow label="Website" value={viewing.website} />
+                <DetailRow label="Email" value={viewing.email} />
+                <DetailRow label="Phone" value={viewing.phone} />
+                <DetailRow label="City" value={viewing.city} />
+                <DetailRow label="Country" value={viewing.country} />
+                <DetailRow label="Employees" value={viewing.employee_count ? String(viewing.employee_count) : null} />
+                <DetailRow label="Annual Revenue" value={formatRevenue(viewing.annual_revenue)} />
+                <DetailRow
+                  label="Created"
+                  value={viewing.created_at
+                    ? new Date(viewing.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                    : null}
+                />
+                <div className="col-span-2">
+                  <DetailRow label="Notes" value={viewing.notes} />
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setViewing(null)}>Close</Button>
+                {canEdit && (
+                  <Button onClick={() => { const c = viewing; setViewing(null); openEdit(c); }}>
+                    <Pencil className="mr-2 h-4 w-4" /> Edit
+                  </Button>
+                )}
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Create / Edit Company Dialog */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>{editing ? (canEdit ? "Edit company" : "View company") : "New company"}</DialogTitle></DialogHeader>
-          <fieldset disabled={viewOnly} className="grid grid-cols-2 gap-4 py-2 min-w-0">
+          <DialogHeader><DialogTitle>{editing ? "Edit company" : "New company"}</DialogTitle></DialogHeader>
+          <div className="grid grid-cols-2 gap-4 py-2 min-w-0">
             <div className="col-span-2 space-y-1.5"><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} /></div>
             <div className="space-y-1.5"><Label>Industry</Label><Input value={form.industry} onChange={(e) => setForm({...form, industry: e.target.value})} /></div>
             <div className="space-y-1.5"><Label>Website</Label><Input value={form.website} onChange={(e) => setForm({...form, website: e.target.value})} /></div>
@@ -344,15 +428,22 @@ function CompaniesPage() {
             <div className="space-y-1.5"><Label>Employees</Label><Input type="number" value={form.employee_count} onChange={(e) => setForm({...form, employee_count: Number(e.target.value)})} /></div>
             <div className="space-y-1.5"><Label>Annual Revenue ($)</Label><Input type="number" value={form.annual_revenue} onChange={(e) => setForm({...form, annual_revenue: Number(e.target.value)})} /></div>
             <div className="col-span-2 space-y-1.5"><Label>Notes</Label><Textarea rows={3} value={form.notes} onChange={(e) => setForm({...form, notes: e.target.value})} /></div>
-          </fieldset>
+          </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>{viewOnly ? "Close" : "Cancel"}</Button>
-            {!viewOnly && (
-              <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{editing ? "Save" : "Create"}</Button>
-            )}
+            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{editing ? "Save" : "Create"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
+      <div className="text-sm mt-1 wrap-break-word whitespace-pre-wrap">{value || "—"}</div>
     </div>
   );
 }
