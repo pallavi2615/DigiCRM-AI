@@ -1,8 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
-import { useActiveIndustry, scopeToIndustry } from "@/lib/active-industry";
-import { useEffect, useMemo, useState } from "react";
+import { apiFetch } from "@/lib/api";
+import { useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,10 +11,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Ticket, Plus, Search, AlertTriangle, Loader2, Clock } from "lucide-react";
+import { Ticket as TicketIcon, Plus, Search, AlertTriangle, Loader2, Clock } from "lucide-react";
 import { toast } from "sonner";
-import { useActiveTenant } from "@/lib/queries/tenants";
-import { useRealtimeTable } from "@/lib/use-realtime-table";
 
 export const Route = createFileRoute("/_authenticated/tickets")({
   head: () => ({ meta: [{ title: "Tickets — DigiCRM AI" }, { name: "robots", content: "noindex" }] }),
@@ -23,21 +20,39 @@ export const Route = createFileRoute("/_authenticated/tickets")({
 });
 
 type Ticket = {
-  id: string;
-  ticket_number: number;
+  id: number;
+  tenant_id: number;
   subject: string;
+  description: string | null;
+  ticket_number: string;
+  requester_name: string | null;
+  requester_email: string;
+  requester_phone: string | null;
+  requester_id: number | null;
   status: string;
   priority: string;
   urgency: string;
-  channel: string;
-  requester_email: string;
-  requester_name: string | null;
-  assignee_id: string | null;
+  category: string | null;
+  assigned_to: number | null;
+  created_by: number | null;
   sla_due_at: string | null;
   sla_breached: boolean;
   first_response_at: string | null;
+  resolved_at: string | null;
+  closed_at: string | null;
+  tags: string[];
+  custom_fields: Record<string, unknown>;
   created_at: string;
-  tenant_id: string | null;
+  updated_at: string;
+};
+
+type TicketStats = {
+  all: number;
+  open: number;
+  pending: number;
+  resolved: number;
+  closed: number;
+  sla_breached: number;
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -48,19 +63,18 @@ const STATUS_COLORS: Record<string, string> = {
 };
 const PRIORITY_COLORS: Record<string, string> = {
   low: "bg-slate-500/10 text-slate-500",
-  normal: "bg-blue-500/10 text-blue-500",
+  medium: "bg-blue-500/10 text-blue-500",
   high: "bg-orange-500/10 text-orange-500",
   urgent: "bg-red-500/10 text-red-500",
 };
 const URGENCY_COLORS: Record<string, string> = {
   low: "bg-slate-500/10 text-slate-500",
-  normal: "bg-sky-500/10 text-sky-500",
+  medium: "bg-sky-500/10 text-sky-500",
   high: "bg-amber-500/10 text-amber-500",
   critical: "bg-red-500/10 text-red-500 font-semibold",
 };
 
 function TicketsPage() {
-  const { active } = useActiveTenant();
   const [status, setStatus] = useState<string>("all");
   const [priority, setPriority] = useState<string>("all");
   const [urgency, setUrgency] = useState<string>("all");
@@ -68,31 +82,17 @@ function TicketsPage() {
   const [showNew, setShowNew] = useState(false);
   const navigate = useNavigate();
 
-  // Tick every 30s so SLA countdowns stay live without re-fetching.
-  const [, setNowTick] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => setNowTick((n) => n + 1), 30000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  useRealtimeTable("support_tickets", [["tickets"]]);
-
-  const { group: crmGroup } = useActiveIndustry();
-
   const { data: tickets = [], isLoading } = useQuery({
-    queryKey: ["tickets", active?.id, crmGroup],
-    queryFn: async () => {
-      let q = supabase
-        .from("support_tickets")
-        .select("id, ticket_number, subject, status, priority, urgency, channel, requester_email, requester_name, assignee_id, sla_due_at, sla_breached, first_response_at, created_at, tenant_id")
-        .order("created_at", { ascending: false })
-        .limit(200);
-      if (active?.id) q = q.eq("tenant_id", active.id);
-      q = scopeToIndustry(q, crmGroup);
-      const { data, error } = await q;
-      if (error) throw error;
-      return (data ?? []) as Ticket[];
-    },
+    queryKey: ["tickets"],
+    queryFn: () => apiFetch<Ticket[]>("/api/v1/tickets"),
+    // Keep SLA countdowns roughly fresh without a realtime subscription.
+    refetchInterval: 30000,
+  });
+
+  const { data: stats } = useQuery({
+    queryKey: ["tickets", "stats"],
+    queryFn: () => apiFetch<TicketStats>("/api/v1/tickets/stats"),
+    refetchInterval: 30000,
   });
 
   const filtered = useMemo(() => {
@@ -105,17 +105,18 @@ function TicketsPage() {
       return (
         t.subject.toLowerCase().includes(q) ||
         t.requester_email.toLowerCase().includes(q) ||
-        String(t.ticket_number).includes(q)
+        t.ticket_number.toLowerCase().includes(q)
       );
     });
   }, [tickets, status, priority, urgency, search]);
 
-  const counts = {
+  const counts = stats ?? {
     all: tickets.length,
     open: tickets.filter((t) => t.status === "open").length,
     pending: tickets.filter((t) => t.status === "pending").length,
     resolved: tickets.filter((t) => t.status === "resolved").length,
-    breached: tickets.filter((t) => t.sla_breached).length,
+    closed: tickets.filter((t) => t.status === "closed").length,
+    sla_breached: tickets.filter((t) => t.sla_breached).length,
   };
 
   return (
@@ -123,11 +124,9 @@ function TicketsPage() {
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold flex items-center gap-2">
-            <Ticket className="h-6 w-6" /> Tickets
+            <TicketIcon className="h-6 w-6" /> Tickets
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            {active ? `Support inbox for ${active.name}` : "All workspace tickets"}
-          </p>
+          <p className="text-sm text-muted-foreground mt-1">Support inbox</p>
         </div>
         <Button onClick={() => setShowNew(true)}>
           <Plus className="h-4 w-4 mr-2" /> New Ticket
@@ -139,32 +138,32 @@ function TicketsPage() {
         <StatCard label="Open" value={counts.open} onClick={() => setStatus("open")} active={status === "open"} />
         <StatCard label="Pending" value={counts.pending} onClick={() => setStatus("pending")} active={status === "pending"} />
         <StatCard label="Resolved" value={counts.resolved} onClick={() => setStatus("resolved")} active={status === "resolved"} />
-        <StatCard label="SLA Breached" value={counts.breached} tone="danger" />
+        <StatCard label="SLA Breached" value={counts.sla_breached} tone="danger" />
       </div>
 
       <Card>
         <CardContent className="p-4">
           <div className="flex gap-2 mb-4 flex-wrap">
-            <div className="relative flex-1 min-w-[240px]">
+            <div className="relative flex-1 min-w-60">
               <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input placeholder="Search subject, email, #number" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
             </div>
             <Select value={priority} onValueChange={setPriority}>
-              <SelectTrigger className="w-[150px]"><SelectValue placeholder="Priority" /></SelectTrigger>
+              <SelectTrigger className="w-37.5"><SelectValue placeholder="Priority" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All priorities</SelectItem>
                 <SelectItem value="low">Low</SelectItem>
-                <SelectItem value="normal">Normal</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
                 <SelectItem value="high">High</SelectItem>
                 <SelectItem value="urgent">Urgent</SelectItem>
               </SelectContent>
             </Select>
             <Select value={urgency} onValueChange={setUrgency}>
-              <SelectTrigger className="w-[150px]"><SelectValue placeholder="Urgency" /></SelectTrigger>
+              <SelectTrigger className="w-37.5"><SelectValue placeholder="Urgency" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All urgencies</SelectItem>
                 <SelectItem value="low">Low</SelectItem>
-                <SelectItem value="normal">Normal</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
                 <SelectItem value="high">High</SelectItem>
                 <SelectItem value="critical">Critical</SelectItem>
               </SelectContent>
@@ -175,7 +174,7 @@ function TicketsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[80px]">#</TableHead>
+                  <TableHead className="w-20">#</TableHead>
                   <TableHead>Subject</TableHead>
                   <TableHead>Requester</TableHead>
                   <TableHead>Status</TableHead>
@@ -194,10 +193,10 @@ function TicketsPage() {
                   <TableRow
                     key={t.id}
                     className="cursor-pointer hover:bg-muted/40"
-                    onClick={() => navigate({ to: "/tickets/$id", params: { id: t.id } })}
+                    onClick={() => navigate({ to: "/tickets/$id", params: { id: String(t.id) } })}
                   >
                     <TableCell className="font-mono text-xs">#{t.ticket_number}</TableCell>
-                    <TableCell className="max-w-[300px] truncate font-medium">{t.subject}</TableCell>
+                    <TableCell className="max-w-75 truncate font-medium">{t.subject}</TableCell>
                     <TableCell className="text-sm">
                       <div>{t.requester_name ?? t.requester_email}</div>
                       {t.requester_name && <div className="text-xs text-muted-foreground">{t.requester_email}</div>}
@@ -209,7 +208,7 @@ function TicketsPage() {
                       <span className={`text-xs px-2 py-1 rounded ${PRIORITY_COLORS[t.priority]}`}>{t.priority}</span>
                     </TableCell>
                     <TableCell>
-                      <span className={`text-xs px-2 py-1 rounded ${URGENCY_COLORS[t.urgency ?? "normal"]}`}>{t.urgency ?? "normal"}</span>
+                      <span className={`text-xs px-2 py-1 rounded ${URGENCY_COLORS[t.urgency ?? "medium"]}`}>{t.urgency ?? "medium"}</span>
                     </TableCell>
                     <TableCell>
                       <SlaCell dueAt={t.sla_due_at} breached={t.sla_breached} responded={!!t.first_response_at} />
@@ -225,7 +224,7 @@ function TicketsPage() {
         </CardContent>
       </Card>
 
-      {showNew && <NewTicketDialog onClose={() => setShowNew(false)} tenantId={active?.id ?? null} />}
+      {showNew && <NewTicketDialog onClose={() => setShowNew(false)} />}
     </div>
   );
 }
@@ -257,28 +256,30 @@ function SlaCell({ dueAt, breached, responded }: { dueAt: string | null; breache
   );
 }
 
-function NewTicketDialog({ onClose, tenantId }: { onClose: () => void; tenantId: string | null }) {
+function NewTicketDialog({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [form, setForm] = useState({
-    subject: "", description: "", priority: "normal", urgency: "normal",
+    subject: "", description: "", priority: "medium", urgency: "medium",
     requester_email: "", requester_name: "",
   });
-  const { group: dialogGroup } = useActiveIndustry();
   const create = useMutation({
-    mutationFn: async () => {
-      const { createTicketFn } = await import("@/lib/tickets.functions");
-      await createTicketFn({ data: {
-        tenantId: tenantId,
-        subject: form.subject,
-        description: form.description || null,
-        priority: form.priority as "low" | "normal" | "high" | "urgent",
-        urgency: form.urgency as "low" | "normal" | "high" | "critical",
-        requester_email: form.requester_email,
-        requester_name: form.requester_name || null,
-        industryGroup: dialogGroup,
-      } });
+    mutationFn: () =>
+      apiFetch("/api/v1/tickets", {
+        method: "POST",
+        body: JSON.stringify({
+          subject: form.subject,
+          description: form.description || null,
+          priority: form.priority,
+          urgency: form.urgency,
+          requester_email: form.requester_email,
+          requester_name: form.requester_name || null,
+        }),
+      }),
+    onSuccess: () => {
+      toast.success("Ticket created");
+      qc.invalidateQueries({ queryKey: ["tickets"] });
+      onClose();
     },
-    onSuccess: () => { toast.success("Ticket created"); qc.invalidateQueries({ queryKey: ["tickets"] }); onClose(); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -308,7 +309,7 @@ function NewTicketDialog({ onClose, tenantId }: { onClose: () => void; tenantId:
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="low">Low</SelectItem>
-                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
                   <SelectItem value="high">High</SelectItem>
                   <SelectItem value="urgent">Urgent</SelectItem>
                 </SelectContent>
@@ -320,7 +321,7 @@ function NewTicketDialog({ onClose, tenantId }: { onClose: () => void; tenantId:
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="low">Low</SelectItem>
-                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
                   <SelectItem value="high">High</SelectItem>
                   <SelectItem value="critical">Critical</SelectItem>
                 </SelectContent>

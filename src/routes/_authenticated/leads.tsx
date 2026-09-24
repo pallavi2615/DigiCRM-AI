@@ -46,12 +46,17 @@ interface Lead {
   email: string | null;
   phone: string | null;
   company: string | null;
+  company_name?: string | null;
+  designation: string | null;
   message: string | null;
   source: string;
   status: string;
   priority: string;
-  value: number;
+  // backend returns these as strings (e.g. "0", "500.00")
+  value: string | number;
+  estimated_value: string | number;
   assigned_to: number | null;
+  contact_id?: number | null;
   score: number;
   custom_fields: Record<string, any>;
   created_at: string;
@@ -64,6 +69,22 @@ interface Tenant {
   id: number;
   name?: string;
   company_name?: string;
+}
+
+// Minimal shape returned by GET /api/v1/contacts
+interface ContactLite {
+  id: number;
+  first_name: string;
+  last_name: string | null;
+  email: string | null;
+  phone: string | null;
+  designation: string | null;
+}
+
+// Minimal shape returned by GET /api/v1/companies
+interface CompanyLite {
+  id: number;
+  name: string;
 }
 
 interface LeadStats {
@@ -81,10 +102,11 @@ interface CreateLeadPayload {
   email: string;
   phone: string;
   company: string;
+  designation: string;
   message: string;
   source: string;
   priority: string;
-  value: number;
+  value: string;
 }
 
 interface UpdateLeadPayload {
@@ -92,10 +114,11 @@ interface UpdateLeadPayload {
   email: string;
   phone: string;
   company: string;
+  designation: string;
   message: string;
   status: string;
   priority: string;
-  value: number;
+  value: string;
 }
 
 interface ImportLeadsResult {
@@ -128,24 +151,51 @@ const emptyForm: CreateLeadPayload = {
   email: "",
   phone: "",
   company: "",
+  designation: "",
   message: "",
   source: "manual",
   priority: "medium",
-  value: 0,
+  value: "",
 };
 
+function getLeadAmount(lead: Lead): number {
+  const est = Number(lead.estimated_value);
+  if (Number.isFinite(est) && est > 0) return est;
+  const val = Number(lead.value);
+  if (Number.isFinite(val) && val > 0) return val;
+  return 0;
+}
+
 function toUpdatePayload(lead: Lead): UpdateLeadPayload {
+  const amount = getLeadAmount(lead);
   return {
     name: lead.name ?? "",
     email: lead.email ?? "",
     phone: lead.phone ?? "",
     company: lead.company ?? "",
+    designation: lead.designation ?? "",
     message: lead.message ?? "",
     status: lead.status ?? "new",
     priority: lead.priority ?? "medium",
-    value: lead.value ?? 0,
+    value: amount > 0 ? String(amount) : "",
   };
 }
+
+const sanitizeNumericInput = (raw: string) => {
+  let cleaned = raw.replace(/[^0-9.]/g, "");
+  const firstDot = cleaned.indexOf(".");
+  if (firstDot !== -1) {
+    cleaned =
+      cleaned.slice(0, firstDot + 1) +
+      cleaned.slice(firstDot + 1).replace(/\./g, "");
+  }
+  return cleaned;
+};
+
+const toNumber = (v: string) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
 
 const tenantLabel = (t: Tenant) =>
   t.name ?? t.company_name ?? `Tenant #${t.id}`;
@@ -155,6 +205,100 @@ const currencyFormatter = new Intl.NumberFormat("en-IN", {
   currency: "INR",
   maximumFractionDigits: 0,
 });
+
+// ⭐ Mirror a lead's free-text company into the companies table so it shows
+// up on the Companies page. Best-effort: dedupes by name (case-insensitive).
+// Returns the company id (existing or newly created), or null if skipped.
+// Matches the POST /api/v1/companies schema:
+//   name (required), industry, location, employees, revenue, website,
+//   phone, email, notes, logo_url, owner_id, tags, status
+async function mirrorLeadToCompany(lead: Lead): Promise<number | null> {
+  const name = (lead.company || lead.company_name || "").trim();
+  if (!name) return null;
+
+  // 1. Check if a company with this name already exists
+  let existing: CompanyLite[] = [];
+  try {
+    const res = await apiFetch<CompanyLite[] | { items: CompanyLite[] }>(
+      "/api/v1/companies"
+    );
+    existing = Array.isArray(res) ? res : res.items ?? [];
+  } catch {
+    existing = [];
+  }
+
+  const match = existing.find(
+    (c) => c.name?.trim().toLowerCase() === name.toLowerCase()
+  );
+  if (match) return match.id;
+
+  // 2. Create it. We deliberately don't copy the lead's personal email/phone
+  //    into the company — those belong to the person, not the company.
+  const payload: Record<string, unknown> = {
+    name,
+    tags: [],
+    status: "active",
+  };
+  if (lead.message?.trim()) payload.notes = lead.message.trim();
+
+  const created = await apiFetch<CompanyLite>("/api/v1/companies", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return created?.id ?? null;
+}
+
+// ⭐ Mirror a freshly-created lead into the contacts table so it shows up
+// on the Contacts page. Matches the POST /api/v1/contacts schema:
+//   - email is required (EmailStr) → skip mirroring if the lead has none
+//   - company_id is an int     → omit it entirely (lead only has free-text company)
+//   - optional strings         → omit when empty rather than sending null
+//   - tags/status              → send defaults so nothing is rejected
+async function mirrorLeadToContact(lead: Lead): Promise<void> {
+  const email = lead.email?.trim() || null;
+  const phone = lead.phone?.trim() || null;
+
+  // Backend requires a valid email to create a contact.
+  if (!email) return;
+  if (lead.contact_id) return; // already linked to a contact
+
+  // Skip if a contact with this email already exists for this tenant.
+  let existing: ContactLite[] = [];
+  try {
+    const res = await apiFetch<ContactLite[] | { items: ContactLite[] }>(
+      `/api/v1/contacts?search=${encodeURIComponent(email)}&limit=50`
+    );
+    existing = Array.isArray(res) ? res : res.items ?? [];
+  } catch {
+    existing = [];
+  }
+
+  const alreadyExists = existing.some(
+    (c) => c.email?.toLowerCase() === email.toLowerCase()
+  );
+  if (alreadyExists) return;
+
+  // Split "neha sharma" → first_name "neha", last_name "sharma"
+  const fullName = (lead.name || "").trim();
+  const [firstName, ...rest] = fullName.split(/\s+/);
+  const lastName = rest.join(" ") || null;
+
+  const payload: Record<string, unknown> = {
+    first_name: firstName || fullName || email.split("@")[0] || "Unknown",
+    email,
+    tags: [],
+    status: "active",
+  };
+  if (lastName) payload.last_name = lastName;
+  if (phone) payload.phone = phone;
+  if (lead.designation?.trim()) payload.designation = lead.designation.trim();
+  if (lead.message?.trim()) payload.notes = lead.message.trim();
+
+  await apiFetch("/api/v1/contacts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
 
 // ============ COMPONENT ============
 function LeadsPage() {
@@ -177,7 +321,6 @@ function LeadsPage() {
   const [editForm, setEditForm] = useState<UpdateLeadPayload | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
-  // -------- ⭐ Attach Follow-up State --------
   const [attachFor, setAttachFor] = useState<Lead | null>(null);
   const [attachSequenceId, setAttachSequenceId] = useState<number | null>(null);
 
@@ -185,7 +328,6 @@ function LeadsPage() {
   const [importResultOpen, setImportResultOpen] = useState(false);
   const [importResult, setImportResult] = useState<ImportLeadsResult | null>(null);
 
-  // -------- Leads List --------
   const {
     data: leads,
     isLoading,
@@ -209,21 +351,18 @@ function LeadsPage() {
     },
   });
 
-  // -------- ⭐ Follow-up Sequences --------
   const { data: sequences } = useQuery({
     queryKey: ["followup-sequences"],
     queryFn: () => apiFetch<any[]>("/api/v1/followups/sequences"),
     enabled: !!attachFor,
   });
 
-  // -------- Stats --------
   const { data: stats } = useQuery({
     queryKey: ["leads", "stats"],
     queryFn: () => apiFetch<LeadStats>("/api/v1/leads/stats"),
     enabled: !authLoading && !isSuperadmin,
   });
 
-  // -------- Tenants --------
   const { data: tenants } = useQuery({
     queryKey: ["superadmin", "clients"],
     queryFn: async () => {
@@ -235,20 +374,46 @@ function LeadsPage() {
     enabled: isSuperadmin,
   });
 
-  // -------- Create Lead --------
+  // -------- Create Lead (+ mirror into companies & contacts) --------
   const createLead = useMutation({
-    mutationFn: (payload: CreateLeadPayload) =>
-      apiFetch<Lead>("/api/v1/leads", {
+    mutationFn: async (payload: CreateLeadPayload) => {
+      const numericValue = toNumber(payload.value);
+
+      // 1. Create the lead
+      const newLead = await apiFetch<Lead>("/api/v1/leads", {
         method: "POST",
-        body: JSON.stringify(payload),
-      }),
-    onSuccess: () => {
+        body: JSON.stringify({
+          ...payload,
+          estimated_value: numericValue,
+        }),
+      });
+
+      // 2. Mirror into companies + contacts so they show on their pages.
+      //    Best-effort: never fail the lead creation if these error.
+      try {
+        await mirrorLeadToCompany(newLead);
+      } catch (err) {
+        console.error("[leads] failed to mirror into companies:", err);
+      }
+      try {
+        await mirrorLeadToContact(newLead);
+      } catch (err) {
+        console.error("[leads] failed to mirror into contacts:", err);
+      }
+
+      return newLead;
+    },
+    onSuccess: (newLead) => {
       toast.success("Lead created");
       setForm(emptyForm);
       setCreateOpen(false);
       qc.invalidateQueries({ queryKey: ["leads"] });
       qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
       qc.invalidateQueries({ queryKey: ["kpi"] });
+      qc.invalidateQueries({ queryKey: ["contacts"] }); // refresh Contacts page
+      qc.invalidateQueries({ queryKey: ["companies"] }); // refresh Companies page
+      qc.invalidateQueries({ queryKey: ["companies-lite"] });
+      setAttachFor(newLead);
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to create lead");
@@ -261,16 +426,70 @@ function LeadsPage() {
       toast.error("Add at least a name, email, or phone");
       return;
     }
+    if (!form.email.trim()) {
+      toast.warning(
+        "No email provided — a matching contact will not be created automatically."
+      );
+    }
     createLead.mutate(form);
   };
 
-  // -------- Update Lead --------
+  // -------- Update Lead (syncs company + linked contact) --------
   const updateLead = useMutation({
-    mutationFn: ({ id, payload }: { id: number; payload: UpdateLeadPayload }) =>
-      apiFetch<Lead>(`/api/v1/leads/${id}`, {
+    mutationFn: async ({
+      id,
+      payload,
+    }: {
+      id: number;
+      payload: UpdateLeadPayload;
+    }) => {
+      const numericValue = toNumber(payload.value);
+
+      const updated = await apiFetch<Lead>(`/api/v1/leads/${id}`, {
         method: "PUT",
-        body: JSON.stringify(payload),
-      }),
+        body: JSON.stringify({
+          ...payload,
+          estimated_value: numericValue,
+        }),
+      });
+
+      // Best-effort company sync (creates the company if it's new)
+      try {
+        await mirrorLeadToCompany(updated);
+      } catch (err) {
+        console.error("[leads] failed to sync company:", err);
+      }
+
+      // Best-effort contact sync
+      try {
+        if (updated.contact_id) {
+          // Update the linked contact
+          const contactPayload: Record<string, unknown> = {};
+          if (updated.name) {
+            const [first, ...rest] = updated.name.trim().split(/\s+/);
+            contactPayload.first_name = first || updated.name;
+            contactPayload.last_name = rest.join(" ") || null;
+          }
+          if (updated.email?.trim()) contactPayload.email = updated.email.trim();
+          if (updated.phone?.trim()) contactPayload.phone = updated.phone.trim();
+          if (updated.designation?.trim())
+            contactPayload.designation = updated.designation.trim();
+          if (updated.message?.trim()) contactPayload.notes = updated.message.trim();
+
+          await apiFetch(`/api/v1/contacts/${updated.contact_id}`, {
+            method: "PUT",
+            body: JSON.stringify(contactPayload),
+          });
+        } else {
+          // No contact yet — try to create one now
+          await mirrorLeadToContact(updated);
+        }
+      } catch (err) {
+        console.error("[leads] failed to sync contact:", err);
+      }
+
+      return updated;
+    },
     onSuccess: () => {
       toast.success("Lead updated");
       setEditingLead(null);
@@ -278,6 +497,9 @@ function LeadsPage() {
       qc.invalidateQueries({ queryKey: ["leads"] });
       qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
       qc.invalidateQueries({ queryKey: ["kpi"] });
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+      qc.invalidateQueries({ queryKey: ["companies"] });
+      qc.invalidateQueries({ queryKey: ["companies-lite"] });
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to update lead");
@@ -317,6 +539,9 @@ function LeadsPage() {
       qc.invalidateQueries({ queryKey: ["leads"] });
       qc.invalidateQueries({ queryKey: ["pipeline-deals"] });
       qc.invalidateQueries({ queryKey: ["kpi"] });
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+      qc.invalidateQueries({ queryKey: ["companies"] });
+      qc.invalidateQueries({ queryKey: ["companies-lite"] });
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : "Failed to import leads");
@@ -340,7 +565,7 @@ function LeadsPage() {
     },
   });
 
-  // -------- ⭐ Attach Follow-up --------
+  // -------- Attach Follow-up --------
   const attachSequence = useMutation({
     mutationFn: ({ leadId, sequenceId }: { leadId: number; sequenceId: number }) =>
       apiFetch<any>(`/api/v1/followups/leads/${leadId}/attach-sequence`, {
@@ -401,7 +626,7 @@ function LeadsPage() {
   const total = isSuperadmin ? items.length : stats?.total ?? items.length;
   const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
 
-  const colCount = isSuperadmin ? 9 : 8;   // ⭐ +1 for Actions column
+  const colCount = isSuperadmin ? 9 : 8;
   const showLoading = isLoading || authLoading;
 
   const handleRefresh = () => {
@@ -479,9 +704,6 @@ function LeadsPage() {
                 <form onSubmit={handleCreateSubmit}>
                   <DialogHeader>
                     <DialogTitle>Create Lead</DialogTitle>
-                    <DialogDescription>
-                      Add a new lead manually to your pipeline.
-                    </DialogDescription>
                   </DialogHeader>
 
                   <div className="grid gap-4 py-4">
@@ -537,6 +759,18 @@ function LeadsPage() {
                     </div>
 
                     <div className="grid gap-2">
+                      <Label htmlFor="designation">Designation</Label>
+                      <Input
+                        id="designation"
+                        value={form.designation}
+                        onChange={(e) =>
+                          setForm((f) => ({ ...f, designation: e.target.value }))
+                        }
+                        placeholder="e.g. Marketing Manager"
+                      />
+                    </div>
+
+                    <div className="grid gap-2">
                       <Label htmlFor="message">Message</Label>
                       <Textarea
                         id="message"
@@ -586,13 +820,13 @@ function LeadsPage() {
                         <Label htmlFor="value">Value (₹)</Label>
                         <Input
                           id="value"
-                          type="number"
-                          min={0}
+                          type="text"
+                          inputMode="decimal"
                           value={form.value}
                           onChange={(e) =>
                             setForm((f) => ({
                               ...f,
-                              value: Number(e.target.value) || 0,
+                              value: sanitizeNumericInput(e.target.value),
                             }))
                           }
                           placeholder="0"
@@ -756,88 +990,89 @@ function LeadsPage() {
                   </TableRow>
                 )}
 
-                {!showLoading && !error && filteredItems.map((lead) => (
-                  <TableRow
-                    key={lead.id}
-                    className={`hover:bg-muted/30 ${canWrite ? "cursor-pointer" : ""}`}
-                    onClick={canWrite ? () => openEditDialog(lead) : undefined}
-                  >
-                    <TableCell className="font-medium">
-                      <div>{lead.name || "—"}</div>
-                      {lead.company && (
+                {!showLoading && !error && filteredItems.map((lead) => {
+                  const amount = getLeadAmount(lead);
+                  return (
+                    <TableRow
+                      key={lead.id}
+                      className={`hover:bg-muted/30 ${canWrite ? "cursor-pointer" : ""}`}
+                      onClick={canWrite ? () => openEditDialog(lead) : undefined}
+                    >
+                      <TableCell className="font-medium">
+                        <div>{lead.name || "—"}</div>
+                        {(lead.company || lead.company_name) && (
+                          <div className="text-xs text-muted-foreground">
+                            {lead.company || lead.company_name}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-sm">{lead.email || "—"}</div>
                         <div className="text-xs text-muted-foreground">
-                          {lead.company}
+                          {lead.phone || ""}
                         </div>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="text-sm">{lead.email || "—"}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {lead.phone || ""}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        className={`${
-                          statusColors[lead.status] ||
-                          "bg-gray-100 text-gray-700"
-                        } border-0 capitalize`}
-                      >
-                        {lead.status.replace("_", " ")}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        className={`${
-                          priorityColors[lead.priority] ||
-                          "bg-gray-100 text-gray-700"
-                        } border-0 capitalize`}
-                      >
-                        {lead.priority || "—"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {lead.value
-                        ? currencyFormatter.format(lead.value)
-                        : "—"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
-                      {lead.source}
-                    </TableCell>
-                    {isSuperadmin && (
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          className={`${
+                            statusColors[lead.status] ||
+                            "bg-gray-100 text-gray-700"
+                          } border-0 capitalize`}
+                        >
+                          {lead.status.replace("_", " ")}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          className={`${
+                            priorityColors[lead.priority] ||
+                            "bg-gray-100 text-gray-700"
+                          } border-0 capitalize`}
+                        >
+                          {lead.priority || "—"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {amount > 0 ? currencyFormatter.format(amount) : "—"}
+                      </TableCell>
                       <TableCell className="text-muted-foreground text-sm">
-                        {(() => {
-                          const t = tenants?.find((t) => t.id === lead.tenant_id);
-                          return t ? tenantLabel(t) : lead.tenant_id;
-                        })()}
+                        {lead.source}
                       </TableCell>
-                    )}
-                    <TableCell className="text-muted-foreground text-sm">
-                      {new Date(lead.created_at).toLocaleDateString("en-IN", {
-                        day: "2-digit",
-                        month: "short",
-                        year: "numeric",
-                      })}
-                    </TableCell>
-                    {canWrite && (
-                      <TableCell onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => setAttachFor(lead)}>
-                              <Link2 className="mr-2 h-4 w-4" />
-                              Attach Follow-up
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                      {isSuperadmin && (
+                        <TableCell className="text-muted-foreground text-sm">
+                          {(() => {
+                            const t = tenants?.find((t) => t.id === lead.tenant_id);
+                            return t ? tenantLabel(t) : lead.tenant_id;
+                          })()}
+                        </TableCell>
+                      )}
+                      <TableCell className="text-muted-foreground text-sm">
+                        {new Date(lead.created_at).toLocaleDateString("en-IN", {
+                          day: "2-digit",
+                          month: "short",
+                          year: "numeric",
+                        })}
                       </TableCell>
-                    )}
-                  </TableRow>
-                ))}
+                      {canWrite && (
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-8 w-8">
+                                <MoreVertical className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => setAttachFor(lead)}>
+                                <Link2 className="mr-2 h-4 w-4" />
+                                Attach Follow-up
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
@@ -938,6 +1173,18 @@ function LeadsPage() {
                 </div>
 
                 <div className="grid gap-2">
+                  <Label htmlFor="edit-designation">Designation</Label>
+                  <Input
+                    id="edit-designation"
+                    value={editForm.designation}
+                    onChange={(e) =>
+                      setEditForm((f) => f && { ...f, designation: e.target.value })
+                    }
+                    placeholder="e.g. Marketing Manager"
+                  />
+                </div>
+
+                <div className="grid gap-2">
                   <Label htmlFor="edit-message">Message</Label>
                   <Textarea
                     id="edit-message"
@@ -998,15 +1245,19 @@ function LeadsPage() {
                     <Label htmlFor="edit-value">Value (₹)</Label>
                     <Input
                       id="edit-value"
-                      type="number"
-                      min={0}
+                      type="text"
+                      inputMode="decimal"
                       value={editForm.value}
                       onChange={(e) =>
                         setEditForm(
                           (f) =>
-                            f && { ...f, value: Number(e.target.value) || 0 }
+                            f && {
+                              ...f,
+                              value: sanitizeNumericInput(e.target.value),
+                            }
                         )
                       }
+                      placeholder="0"
                     />
                   </div>
                 </div>
@@ -1073,7 +1324,7 @@ function LeadsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ⭐ Attach Follow-up Dialog */}
+      {/* Attach Follow-up Dialog */}
       <Dialog
         open={!!attachFor}
         onOpenChange={(open) => {
@@ -1197,7 +1448,7 @@ function LeadsPage() {
                   </div>
                   <ul className="space-y-1 text-sm text-red-600 list-disc list-inside">
                     {importResult.errors.map((err, i) => (
-                      <li key={i}>{err}</li>
+                      <li key={i}>{String(err)}</li>
                     ))}
                   </ul>
                 </div>

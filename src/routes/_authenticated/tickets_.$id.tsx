@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,6 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { ArrowLeft, Loader2, Send, Clock, User, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
-import { useRealtimeTable } from "@/lib/use-realtime-table";
 import { FeatureGate } from "@/components/feature-gate";
 
 export const Route = createFileRoute("/_authenticated/tickets_/$id")({
@@ -19,79 +18,112 @@ export const Route = createFileRoute("/_authenticated/tickets_/$id")({
   component: TicketDetail,
 });
 
+type TicketMessage = {
+  id: number;
+  ticket_id: number;
+  sender_id: number | null;
+  sender_type: string;
+  sender_name: string | null;
+  sender_email: string | null;
+  message: string;
+  is_internal: boolean;
+  created_at: string;
+};
+
+type TicketAttachment = {
+  id: number;
+  file_name: string;
+  file_url: string;
+  file_size: number;
+  file_type: string;
+  created_at: string;
+};
+
+type TicketDetailData = {
+  id: number;
+  tenant_id: number;
+  subject: string;
+  description: string | null;
+  ticket_number: string;
+  requester_name: string | null;
+  requester_email: string;
+  requester_phone: string | null;
+  status: string;
+  priority: string;
+  urgency: string;
+  category: string | null;
+  assigned_to: number | null;
+  sla_due_at: string | null;
+  sla_breached: boolean;
+  first_response_at: string | null;
+  resolved_at: string | null;
+  closed_at: string | null;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+  messages: TicketMessage[];
+  attachments: TicketAttachment[];
+};
+
 function TicketDetail() {
   const { id } = Route.useParams();
   const qc = useQueryClient();
-  useRealtimeTable("support_tickets", [["ticket", id]]);
-  useRealtimeTable("ticket_replies", [["ticket-replies", id]]);
 
   const { data: ticket, isLoading } = useQuery({
     queryKey: ["ticket", id],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("support_tickets")
-        .select("*, tenants(name, slug)")
-        .eq("id", id)
-        .maybeSingle();
-      if (error) throw error;
-      return data;
-    },
-  });
-
-  const { data: replies = [] } = useQuery({
-    queryKey: ["ticket-replies", id],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("ticket_replies")
-        .select("id, author_id, author_email, author_name, body, is_public, created_at")
-        .eq("ticket_id", id)
-        .order("created_at", { ascending: true });
-      if (error) throw error;
-      return data ?? [];
-    },
-  });
-
-  const { data: cannedResponses = [] } = useQuery({
-    queryKey: ["canned", ticket?.tenant_id],
-    queryFn: async () => {
-      let q = supabase.from("canned_responses").select("id, name, body");
-      if (ticket?.tenant_id) q = q.eq("tenant_id", ticket.tenant_id);
-      const { data } = await q;
-      return data ?? [];
-    },
-    enabled: !!ticket,
+    queryFn: () => apiFetch<TicketDetailData>(`/api/v1/tickets/${id}`),
+    // Poll instead of a realtime subscription so new replies show up.
+    refetchInterval: 15000,
   });
 
   const [reply, setReply] = useState("");
   const [isPublic, setIsPublic] = useState(true);
 
   const sendReply = useMutation({
-    mutationFn: async () => {
-      const { createTicketReplyFn } = await import("@/lib/tickets.functions");
-      await createTicketReplyFn({ data: { ticketId: id, body: reply, isPublic } });
-    },
+    mutationFn: () =>
+      apiFetch(`/api/v1/tickets/${id}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ message: reply, is_internal: !isPublic }),
+      }),
     onSuccess: () => {
       setReply("");
       toast.success("Reply sent");
-      qc.invalidateQueries({ queryKey: ["ticket-replies", id] });
       qc.invalidateQueries({ queryKey: ["ticket", id] });
+      qc.invalidateQueries({ queryKey: ["tickets"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const updateTicket = useMutation({
-    mutationFn: async (patch: { status?: string; priority?: string }) => {
-      const p: { status?: string; priority?: string; resolved_at?: string } = { ...patch };
-      if (patch.status === "resolved") p.resolved_at = new Date().toISOString();
-      const { error } = await supabase.from("support_tickets").update(p).eq("id", id);
-      if (error) throw error;
+  const updateStatus = useMutation({
+    mutationFn: (status: string) =>
+      apiFetch(`/api/v1/tickets/${id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ticket", id] });
+      qc.invalidateQueries({ queryKey: ["tickets"] });
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["ticket", id] }); qc.invalidateQueries({ queryKey: ["tickets"] }); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const updatePriority = useMutation({
+    mutationFn: (priority: string) =>
+      apiFetch(`/api/v1/tickets/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ priority }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ticket", id] });
+      qc.invalidateQueries({ queryKey: ["tickets"] });
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
   if (isLoading) return <div className="p-8 text-center"><Loader2 className="h-5 w-5 animate-spin inline" /></div>;
   if (!ticket) return <div className="p-8 text-center text-muted-foreground">Ticket not found.</div>;
+
+  const replies = ticket.messages ?? [];
 
   return (
     <div className="space-y-4">
@@ -110,8 +142,6 @@ function TicketDetail() {
               <div className="flex flex-wrap gap-2 text-sm text-muted-foreground">
                 <span>{ticket.requester_name ?? ticket.requester_email}</span>
                 <span>·</span>
-                <span>via {ticket.channel}</span>
-                <span>·</span>
                 <span>{new Date(ticket.created_at).toLocaleString()}</span>
               </div>
             </CardHeader>
@@ -122,16 +152,16 @@ function TicketDetail() {
 
           <div className="space-y-3">
             {replies.map((r) => (
-              <Card key={r.id} className={r.is_public ? "" : "bg-amber-500/5 border-amber-500/30"}>
+              <Card key={r.id} className={r.is_internal ? "bg-amber-500/5 border-amber-500/30" : ""}>
                 <CardContent className="pt-4">
                   <div className="flex items-center justify-between mb-2 text-xs text-muted-foreground">
                     <div className="font-medium text-foreground">
-                      {r.author_name ?? r.author_email ?? "Agent"}
-                      {!r.is_public && <Badge variant="outline" className="ml-2 text-[10px]">Internal note</Badge>}
+                      {r.sender_name ?? r.sender_email ?? "Agent"}
+                      {r.is_internal && <Badge variant="outline" className="ml-2 text-[10px]">Internal note</Badge>}
                     </div>
                     <span>{new Date(r.created_at).toLocaleString()}</span>
                   </div>
-                  <p className="whitespace-pre-wrap text-sm">{r.body}</p>
+                  <p className="whitespace-pre-wrap text-sm">{r.message}</p>
                 </CardContent>
               </Card>
             ))}
@@ -142,17 +172,6 @@ function TicketDetail() {
               <CardTitle className="text-sm">Reply</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {cannedResponses.length > 0 && (
-                <Select onValueChange={(v) => {
-                  const c = cannedResponses.find((x) => x.id === v);
-                  if (c) setReply(c.body);
-                }}>
-                  <SelectTrigger className="w-full sm:w-[240px]"><SelectValue placeholder="Insert canned response" /></SelectTrigger>
-                  <SelectContent>
-                    {cannedResponses.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              )}
               <Textarea rows={6} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Type your reply…" />
               <div className="flex items-center justify-between">
                 <label className="flex items-center gap-2 text-sm">
@@ -174,7 +193,7 @@ function TicketDetail() {
             <CardContent className="space-y-3">
               <div>
                 <Label className="text-xs">Status</Label>
-                <Select value={ticket.status} onValueChange={(v) => updateTicket.mutate({ status: v })}>
+                <Select value={ticket.status} onValueChange={(v) => updateStatus.mutate(v)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="open">Open</SelectItem>
@@ -186,11 +205,11 @@ function TicketDetail() {
               </div>
               <div>
                 <Label className="text-xs">Priority</Label>
-                <Select value={ticket.priority} onValueChange={(v) => updateTicket.mutate({ priority: v })}>
+                <Select value={ticket.priority} onValueChange={(v) => updatePriority.mutate(v)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="normal">Normal</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
                     <SelectItem value="high">High</SelectItem>
                     <SelectItem value="urgent">Urgent</SelectItem>
                   </SelectContent>
@@ -217,6 +236,7 @@ function TicketDetail() {
             <CardContent className="text-sm">
               <div>{ticket.requester_name ?? "—"}</div>
               <a href={`mailto:${ticket.requester_email}`} className="text-primary hover:underline">{ticket.requester_email}</a>
+              {ticket.requester_phone && <div className="text-xs text-muted-foreground mt-1">{ticket.requester_phone}</div>}
             </CardContent>
           </Card>
 

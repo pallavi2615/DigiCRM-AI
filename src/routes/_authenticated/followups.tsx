@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,9 +8,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
@@ -20,8 +17,8 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Loader2, Plus, Trash2, CheckCircle2, XCircle, Clock,
-  Phone, Mail, MessageSquare, ClipboardList, Bell,
+  Loader2, Plus, Trash2, CheckCircle2, Clock,
+  Phone, Mail, MessageSquare, ClipboardList, Bell, User, ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,9 +27,6 @@ export const Route = createFileRoute("/_authenticated/followups")({
   component: FollowupsPage,
 });
 
-// ============================================================
-// TYPES
-// ============================================================
 
 interface SequenceStep {
   id: number;
@@ -81,9 +75,14 @@ interface TaskForm {
   description: string;
 }
 
-// ============================================================
-// HELPERS
-// ============================================================
+interface Lead {
+  id: number;
+  name: string;
+  email: string | null;
+  company: string | null;
+  company_name: string | null;
+}
+
 
 const actionIcons: Record<string, any> = {
   call: Phone,
@@ -116,9 +115,6 @@ const emptyStep: TaskForm = {
   description: "",
 };
 
-// ============================================================
-// MAIN COMPONENT
-// ============================================================
 
 function FollowupsPage() {
   const qc = useQueryClient();
@@ -136,6 +132,18 @@ function FollowupsPage() {
     queryKey: ["followup-tasks"],
     queryFn: () => apiFetch<Task[]>("/api/v1/followups/tasks"),
   });
+
+  // -------- Fetch leads (for names in the task grouping) --------
+  const { data: leads = [] } = useQuery({
+    queryKey: ["leads"],
+    queryFn: () => apiFetch<Lead[]>("/api/v1/leads"),
+  });
+
+  const leadNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const l of leads) map.set(l.id, l.name);
+    return map;
+  }, [leads]);
 
   // -------- Delete sequence --------
   const deleteSequence = useMutation({
@@ -176,6 +184,33 @@ function FollowupsPage() {
   const pendingTasks = tasks.filter((t) => t.status === "pending");
   const inProgressTasks = tasks.filter((t) => t.status === "in_progress");
   const completedTasks = tasks.filter((t) => t.status === "completed");
+
+  // -------- Group tasks by lead, for the hover-to-expand list --------
+  const leadGroups = useMemo(() => {
+    const map = new Map<number, Task[]>();
+    for (const t of tasks) {
+      const list = map.get(t.lead_id) ?? [];
+      list.push(t);
+      map.set(t.lead_id, list);
+    }
+    return Array.from(map.entries())
+      .map(([leadId, leadTasks]) => ({
+        leadId,
+        tasks: leadTasks.sort((a, b) => {
+          // Pending/in-progress first, then by due date
+          const rank = (s: string) => (s === "completed" || s === "skipped" ? 1 : 0);
+          if (rank(a.status) !== rank(b.status)) return rank(a.status) - rank(b.status);
+          if (!a.due_date) return 1;
+          if (!b.due_date) return -1;
+          return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
+        }),
+      }))
+      .sort((a, b) => {
+        const aPending = a.tasks.filter((t) => t.status === "pending").length;
+        const bPending = b.tasks.filter((t) => t.status === "pending").length;
+        return bPending - aPending;
+      });
+  }, [tasks]);
 
   return (
     <div className="space-y-5">
@@ -235,112 +270,121 @@ function FollowupsPage() {
         <TabsContent value="tasks" className="space-y-4 mt-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">All Tasks</CardTitle>
+              <CardTitle className="text-base">Leads with follow-ups</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Hover a lead to see its follow-up tasks.
+              </p>
             </CardHeader>
             <CardContent className="p-0">
               {taskLoading ? (
                 <div className="p-8 text-center">
                   <Loader2 className="h-5 w-5 animate-spin inline" />
                 </div>
+              ) : leadGroups.length === 0 ? (
+                <div className="text-center py-10">
+                  <p className="text-sm text-muted-foreground">
+                    No tasks yet. Attach a sequence to a lead to create tasks.
+                  </p>
+                </div>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Action</TableHead>
-                      <TableHead>Task</TableHead>
-                      <TableHead>Lead</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Due Date</TableHead>
-                      <TableHead className="w-24"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {tasks.map((task) => {
-                      const Icon = actionIcons[task.action_type || "task"] || ClipboardList;
-                      return (
-                        <TableRow key={task.id}>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <Icon className="h-4 w-4" />
-                              <Badge
-                                className={`${
-                                  actionColors[task.action_type || "task"]
-                                } border-0 capitalize`}
-                              >
-                                {task.action_type || "task"}
-                              </Badge>
+                <div className="divide-y">
+                  {leadGroups.map(({ leadId, tasks: leadTasks }) => {
+                    const pending = leadTasks.filter((t) => t.status === "pending").length;
+                    return (
+                      <div key={leadId} className="group/lead">
+                        {/* Lead row — hovering this reveals the tasks below */}
+                        <div className="flex items-center gap-3 px-4 py-3 cursor-default hover:bg-muted/40 transition-colors">
+                          <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                            <User className="h-4 w-4 text-primary" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-sm truncate">
+                              {leadNameById.get(leadId) ?? `Lead #${leadId}`}
                             </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="font-medium">{task.title}</div>
-                            {task.description && (
-                              <div className="text-xs text-muted-foreground">
-                                {task.description}
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            Lead #{task.lead_id}
-                          </TableCell>
-                          <TableCell>
-                            <Badge
-                              className={`${
-                                statusColors[task.status]
-                              } border-0 capitalize`}
-                            >
-                              {task.status.replace("_", " ")}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-sm text-muted-foreground">
-                            {task.due_date
-                              ? new Date(task.due_date).toLocaleDateString("en-IN", {
-                                  day: "2-digit",
-                                  month: "short",
-                                })
-                              : "—"}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex gap-1">
-                              {task.status === "pending" && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() =>
-                                    updateTask.mutate({
-                                      id: task.id,
-                                      status: "completed",
-                                    })
-                                  }
-                                  disabled={updateTask.isPending}
-                                >
-                                  <CheckCircle2 className="h-3 w-3" />
-                                </Button>
+                            <div className="text-xs text-muted-foreground">
+                              {leadTasks.length} task{leadTasks.length > 1 ? "s" : ""}
+                              {pending > 0 && (
+                                <span className="text-blue-600"> · {pending} pending</span>
                               )}
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => deleteTask.mutate(task.id)}
-                                disabled={deleteTask.isPending}
-                              >
-                                <Trash2 className="h-3 w-3 text-destructive" />
-                              </Button>
                             </div>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                    {tasks.length === 0 && (
-                      <TableRow>
-                        <TableCell colSpan={6} className="text-center py-10">
-                          <p className="text-sm text-muted-foreground">
-                            No tasks yet. Attach a sequence to a lead to create
-                            tasks.
-                          </p>
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
+                          </div>
+                          <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform duration-200 group-hover/lead:rotate-180" />
+                        </div>
+
+                        {/* Task list — collapsed by default, expands on hover of the group */}
+                        <div className="grid grid-rows-[0fr] group-hover/lead:grid-rows-[1fr] transition-[grid-template-rows] duration-300 ease-out">
+                          <div className="overflow-hidden">
+                            <div className="px-4 pb-3 pl-13 space-y-1.5">
+                              {leadTasks.map((task) => {
+                                const Icon = actionIcons[task.action_type || "task"] || ClipboardList;
+                                return (
+                                  <div
+                                    key={task.id}
+                                    className="flex items-center gap-2 rounded-md border bg-background p-2 text-sm"
+                                  >
+                                    <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="font-medium truncate">{task.title}</div>
+                                      {task.description && (
+                                        <div className="text-xs text-muted-foreground truncate">
+                                          {task.description}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <Badge
+                                      className={`${
+                                        actionColors[task.action_type || "task"]
+                                      } border-0 capitalize shrink-0`}
+                                    >
+                                      {task.action_type || "task"}
+                                    </Badge>
+                                    <Badge
+                                      className={`${statusColors[task.status]} border-0 capitalize shrink-0`}
+                                    >
+                                      {task.status.replace("_", " ")}
+                                    </Badge>
+                                    <span className="text-xs text-muted-foreground shrink-0 w-14 text-right">
+                                      {task.due_date
+                                        ? new Date(task.due_date).toLocaleDateString("en-IN", {
+                                            day: "2-digit",
+                                            month: "short",
+                                          })
+                                        : "—"}
+                                    </span>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      {task.status === "pending" && (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 px-2"
+                                          onClick={() =>
+                                            updateTask.mutate({ id: task.id, status: "completed" })
+                                          }
+                                          disabled={updateTask.isPending}
+                                        >
+                                          <CheckCircle2 className="h-3 w-3" />
+                                        </Button>
+                                      )}
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 px-2"
+                                        onClick={() => deleteTask.mutate(task.id)}
+                                        disabled={deleteTask.isPending}
+                                      >
+                                        <Trash2 className="h-3 w-3 text-destructive" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </CardContent>
           </Card>
