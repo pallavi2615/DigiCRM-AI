@@ -242,6 +242,20 @@ function ProposalsPage() {
     queryFn: () => apiFetch<Lead[]>("/api/v1/leads"),
   });
 
+  // "Related lead" dropdown: only qualified leads.
+  // The currently-linked lead is always kept in the list so that editing an
+  // existing proposal (whose lead may have moved to another stage after
+  // "Convert to deal") still shows the selected lead.
+  const relatedLeadOptions = useMemo(
+    () =>
+      (leads ?? []).filter(
+        (l) =>
+          (l.status ?? "").toLowerCase() === "qualified" ||
+          String(l.id) === form.lead_id,
+      ),
+    [leads, form.lead_id],
+  );
+
   // ---- Proposals -----------------------------------------------------------
   const { data: proposals, isLoading, isError, refetch } = useQuery({
     queryKey: ["proposals"],
@@ -382,29 +396,25 @@ Deal value: ${form.amount ? `${form.currency} ${form.amount}` : "TBD"}
 Expected close: ${form.close_date || "TBD"}
 
 Include: executive summary, scope of work, deliverables, timeline, pricing table and terms. Use clear markdown headings.`;
-     const accessToken = localStorage.getItem("access_token");
+      const accessToken = localStorage.getItem("access_token");
 
       if (!accessToken) {
         throw new Error("Please login again");
       }
 
-    const res = await apiFetch<{ content: string }>("/api/v1/ai/chat", {
-  method: "POST",
-  body: JSON.stringify({
-    messages: [
-      {
-        role: "user",
-        content: prompt,
-      },
-    ],
-  }),
-});
+      const res = await apiFetch<{ content: string }>("/api/v1/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+        }),
+      });
 
-setForm((f) => ({
-  ...f,
-  terms: res.content,
-}));
-    setForm((f) => ({ ...f, terms: res.content }));
+      setForm((f) => ({ ...f, terms: res.content }));
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -686,7 +696,7 @@ setForm((f) => ({
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit proposal" : "New proposal"}</DialogTitle>
-            <DialogDescription>Link the proposal to a lead and track its forecast.</DialogDescription>
+            <DialogDescription>Link the proposal to a qualified lead and track its forecast.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-1">
             <div className="space-y-1.5"><Label>Title *</Label>
@@ -712,11 +722,19 @@ setForm((f) => ({
               <div className="space-y-1.5"><Label>Related lead</Label>
                 <Select value={form.lead_id} onValueChange={(v) => setForm({ ...form, lead_id: v })}>
                   <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-72">
                     <SelectItem value="none">None</SelectItem>
-                    {(leads ?? []).map((l) => <SelectItem key={l.id} value={String(l.id)}>{leadLabel(l)}</SelectItem>)}
+                    {relatedLeadOptions.length === 0 && (
+                      <SelectItem value="__no_qualified__" disabled>
+                        No qualified leads yet
+                      </SelectItem>
+                    )}
+                    {relatedLeadOptions.map((l) => (
+                      <SelectItem key={l.id} value={String(l.id)}>{leadLabel(l)}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+                <p className="text-[11px] text-muted-foreground">Only leads with status “Qualified” are listed.</p>
               </div>
               <div className="space-y-1.5"><Label>Owner</Label>
                 <Input
@@ -724,7 +742,10 @@ setForm((f) => ({
                   value={
                     form.lead_id === "none"
                       ? "Unassigned"
-                      : leadLabel((leads ?? []).find((l) => String(l.id) === form.lead_id) as Lead)
+                      : (() => {
+                          const l = (leads ?? []).find((x) => String(x.id) === form.lead_id);
+                          return l ? leadLabel(l) : "Unassigned";
+                        })()
                   }
                 />
                 <p className="text-[11px] text-muted-foreground">Set automatically from the linked lead's company.</p>
