@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
 import { apiFetch } from "@/lib/api";
 
 import {
@@ -310,19 +309,22 @@ async function fetchFunnel(): Promise<FunnelItem[]> {
     "/api/v1/dashboard/funnel"
   );
 
-  const rows = extractArray<any>(response);
+  // Backend returns: { stages: [{ name, label, count }], total_leads, conversion_rate }
+  const rows: any[] = Array.isArray(response?.stages)
+    ? response.stages
+    : extractArray<any>(response);
 
   return rows.map((item) => ({
     stage: stringValue(
-      item.stage ??
-        item.name ??
-        item.label,
+      item.label ??
+        item.stage ??
+        item.name,
       "Unknown"
     ),
 
     value: numberValue(
-      item.value ??
-        item.count ??
+      item.count ??
+        item.value ??
         item.lead_count ??
         item.total
     ),
@@ -407,35 +409,13 @@ async function fetchTopPerformers(): Promise<PerformerItem[]> {
     "/api/v1/dashboard/top-performers"
   );
 
-  /*
-   Backend may return:
-
-   [
-     {
-       name: "...",
-       revenue: 10000
-     }
-   ]
-
-   or:
-
-   {
-     performers: [...]
-   }
-
-   or:
-
-   {
-     top_performers: [...]
-   }
-
-   or an object containing owners/sources.
-  */
 
   let rows: any[] = [];
 
   if (Array.isArray(response)) {
     rows = response;
+  } else if (Array.isArray(response?.top_owners)) {
+    rows = response.top_owners;
   } else if (Array.isArray(response?.performers)) {
     rows = response.performers;
   } else if (Array.isArray(response?.top_performers)) {
@@ -448,11 +428,11 @@ async function fetchTopPerformers(): Promise<PerformerItem[]> {
 
   return rows.map((item, index) => ({
     name: stringValue(
-      item.name ??
+      item.owner ??
+        item.name ??
         item.owner_name ??
         item.user_name ??
         item.full_name ??
-        item.owner ??
         item.source,
       `Performer ${index + 1}`
     ),
@@ -480,7 +460,9 @@ async function fetchTopPerformers(): Promise<PerformerItem[]> {
         ? numberValue(item.lead_count)
         : item.leads !== undefined
           ? numberValue(item.leads)
-          : undefined,
+          : item.count !== undefined
+            ? numberValue(item.count)
+            : undefined,
   }));
 }
 
@@ -790,6 +772,45 @@ function SortableKpi({
 }
 
 /* =========================================================
+   DASHBOARD LAYOUT PERSISTENCE (localStorage — no Supabase)
+========================================================= */
+
+const DASHBOARD_LAYOUT_KEY = "dashboard_layout";
+
+type StoredLayout = {
+  order: string[];
+  hidden: string[];
+};
+
+function loadStoredLayout(): StoredLayout | null {
+  try {
+    const raw = localStorage.getItem(DASHBOARD_LAYOUT_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+
+    return {
+      order: Array.isArray(parsed?.order) ? parsed.order : [],
+      hidden: Array.isArray(parsed?.hidden) ? parsed.hidden : [],
+    };
+  } catch (error) {
+    console.error("Failed to read dashboard layout:", error);
+    return null;
+  }
+}
+
+function storeLayout(order: string[], hidden: string[]) {
+  try {
+    localStorage.setItem(
+      DASHBOARD_LAYOUT_KEY,
+      JSON.stringify({ order, hidden })
+    );
+  } catch (error) {
+    console.error("Failed to save dashboard layout:", error);
+  }
+}
+
+/* =========================================================
    DASHBOARD
 ========================================================= */
 
@@ -865,6 +886,9 @@ function Dashboard() {
 
   /* =======================================================
      REALTIME
+     NOTE: useRealtimeTable may still depend on Supabase
+     internally (its own file wasn't provided). If you want
+     that removed too, share @/lib/use-realtime-table.
   ======================================================= */
 
   useRealtimeTable("leads", [
@@ -904,67 +928,40 @@ function Dashboard() {
   }, []);
 
   /* =======================================================
-     LOAD SAVED DASHBOARD LAYOUT
+     LOAD SAVED DASHBOARD LAYOUT (localStorage — no Supabase)
   ======================================================= */
 
   useEffect(() => {
-    (async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+    const stored = loadStoredLayout();
 
-      if (!user) return;
+    if (!stored) return;
 
-      const { data } = await (supabase as any)
-        .from("dashboard_layouts")
-        .select("layout, hidden_widgets")
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (data?.layout?.order) {
-        setOrder(
-          data.layout.order
-            .filter((id: string) =>
-              KPI_WIDGETS.some((w) => w.id === id)
+    if (stored.order.length > 0) {
+      setOrder(
+        stored.order
+          .filter((id) =>
+            KPI_WIDGETS.some((w) => w.id === id)
+          )
+          .concat(
+            KPI_WIDGETS.map((w) => w.id).filter(
+              (id) => !stored.order.includes(id)
             )
-            .concat(
-              KPI_WIDGETS.map((w) => w.id).filter(
-                (id) =>
-                  !data.layout.order.includes(id)
-              )
-            )
-        );
-      }
+          )
+      );
+    }
 
-      if (Array.isArray(data?.hidden_widgets)) {
-        setHidden(data.hidden_widgets);
-      }
-    })();
+    setHidden(stored.hidden);
   }, []);
 
   /* =======================================================
-     SAVE LAYOUT
+     SAVE LAYOUT (localStorage — no Supabase)
   ======================================================= */
 
-  const saveLayout = async (
+  const saveLayout = (
     nextOrder: string[],
     nextHidden: string[]
   ) => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) return;
-
-    await (supabase as any)
-      .from("dashboard_layouts")
-      .upsert({
-        user_id: user.id,
-        layout: {
-          order: nextOrder,
-        },
-        hidden_widgets: nextHidden,
-      });
+    storeLayout(nextOrder, nextHidden);
   };
 
   /* =======================================================

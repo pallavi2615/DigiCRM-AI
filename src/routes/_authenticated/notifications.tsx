@@ -74,7 +74,7 @@ function NotificationsPage() {
 
       <div className="space-y-2">
         {items?.map(n => (
-          <Card key={n.id} className={`shadow-sm ${!n.is_read ? "border-primary/40 bg-primary/[0.02]" : ""}`}>
+          <Card key={n.id} className={`shadow-sm ${!n.is_read ? "border-primary/40 bg-primary/2" : ""}`}>
             <CardContent className="p-4 flex items-start gap-3">
               <div className={`h-2 w-2 rounded-full mt-2 ${n.is_read ? "bg-muted-foreground/30" : "bg-primary"}`} />
               <div className="flex-1 min-w-0">

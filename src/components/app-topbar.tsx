@@ -1,13 +1,18 @@
+// app-topbar.tsx
 import { useNavigate } from "@tanstack/react-router";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 
 import {
+  ALL_CRMS,
+  useActiveIndustry,
+} from "@/lib/active-industry";
+import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Bell, Search, LogOut, User, Moon, Sun } from "lucide-react";
+import { Search, LogOut, User, Moon, Sun } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -15,6 +20,7 @@ import { toast } from "sonner";
 import { GlobalSearch } from "@/components/global-search";
 import { TenantSwitcher } from "@/components/tenant-switcher";
 import { CrmSwitcher } from "@/components/crm-switcher";
+import { NotificationsButton } from "@/components/notifications-button";
 
 export function AppTopbar() {
   const navigate = useNavigate();
@@ -47,6 +53,17 @@ export function AppTopbar() {
     document.documentElement.classList.toggle("dark", next);
     localStorage.setItem("theme", next ? "dark" : "light");
   };
+
+  const { setActive } = useActiveIndustry();
+
+  // Runs once when the app shell mounts (i.e. on a real page refresh),
+  // not on every in-app navigation. Resets the industry filter and
+  // sends the user to the dashboard.
+  useEffect(() => {
+    setActive(ALL_CRMS);
+    navigate({ to: "/dashboard", replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSignOut = async () => {
     await queryClient.cancelQueries();
@@ -84,9 +101,7 @@ export function AppTopbar() {
         <Button variant="ghost" size="icon" onClick={toggleTheme}>
           {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </Button>
-        <Button variant="ghost" size="icon">
-          <Bell className="h-4 w-4" />
-        </Button>
+        <NotificationsButton />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="gap-2 pl-2 pr-3 h-9">

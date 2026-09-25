@@ -1,99 +1,152 @@
-import { useState, useEffect } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Bell, Check } from "lucide-react";
-import { useRealtimeTable } from "@/lib/use-realtime-table";
+// notifications-button.tsx
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Bell } from "lucide-react";
 
-type Notif = {
-  id: string;
-  title: string;
-  body: string | null;
-  is_read: boolean;
-  created_at: string;
-  link: string | null;
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+import { apiFetch } from "@/lib/api";
+
+/* =========================================================
+   TYPES
+========================================================= */
+
+type NotificationItem = {
+  id: string | number;
+  title?: string;
+  message?: string;
+  body?: string;
+  read?: boolean;
+  is_read?: boolean;
+  created_at?: string;
+  link?: string;
 };
 
-async function fetchNotifs(): Promise<Notif[]> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return [];
-  const { data } = await supabase
-    .from("notifications")
-    .select("id, title, body, is_read, created_at, link")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: false })
-    .limit(20);
-  return (data ?? []) as Notif[];
+/* =========================================================
+   API HELPERS
+   NOTE: These endpoints don't exist on the backend yet.
+   Paths/response shape below are placeholders — update them
+   once the real notifications API is built.
+========================================================= */
+
+function extractNotifications(response: any): NotificationItem[] {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.data)) return response.data;
+  if (Array.isArray(response?.results)) return response.results;
+  if (Array.isArray(response?.notifications)) return response.notifications;
+  return [];
 }
 
-export function NotificationsButton() {
-  const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const { data: notifs = [] } = useQuery({ queryKey: ["notifications-panel"], queryFn: fetchNotifs });
-  useRealtimeTable("notifications", [["notifications-panel"]]);
-  const unread = notifs.filter((n) => !n.is_read).length;
+async function fetchNotifications(): Promise<NotificationItem[]> {
+  try {
+    const response = await apiFetch<any>("/api/v1/notifications");
+    return extractNotifications(response);
+  } catch {
+    // Backend endpoint isn't live yet — fail quietly so the topbar
+    // never breaks because of this.
+    return [];
+  }
+}
 
-  const markAllRead = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from("notifications").update({ is_read: true }).eq("user_id", user.id).eq("is_read", false);
-    qc.invalidateQueries({ queryKey: ["notifications-panel"] });
+async function markAllRead() {
+  try {
+    await apiFetch("/api/v1/notifications/read-all", {
+      method: "POST",
+    } as any);
+  } catch {
+    // API not built yet — safe to ignore, local state still updates.
+  }
+}
+
+/* =========================================================
+   NOTIFICATIONS BUTTON
+========================================================= */
+
+export function NotificationsButton() {
+  const [open, setOpen] = useState(false);
+  const queryClient = useQueryClient();
+
+  const { data: notifications = [] } = useQuery({
+    queryKey: ["notifications"],
+    queryFn: fetchNotifications,
+    refetchInterval: 30000,
+  });
+
+  const isUnread = (n: NotificationItem) => !(n.read ?? n.is_read ?? false);
+  const unreadCount = notifications.filter(isUnread).length;
+
+  const handleOpenChange = async (next: boolean) => {
+    setOpen(next);
+
+    if (next && unreadCount > 0) {
+      // Optimistically mark everything read as soon as the panel opens.
+      queryClient.setQueryData<NotificationItem[]>(["notifications"], (old) =>
+        (old ?? []).map((n) => ({ ...n, read: true, is_read: true }))
+      );
+
+      await markAllRead();
+    }
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
+    <DropdownMenu open={open} onOpenChange={handleOpenChange}>
+      <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" className="relative">
           <Bell className="h-4 w-4" />
-          {unread > 0 && (
-            <Badge className="absolute -top-1 -right-1 h-4 min-w-4 px-1 text-[10px] flex items-center justify-center rounded-full">
-              {unread > 9 ? "9+" : unread}
-            </Badge>
+
+          {unreadCount > 0 && (
+            <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-destructive ring-2 ring-background" />
           )}
         </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-96 p-0" align="end">
-        <div className="flex items-center justify-between p-3 border-b">
-          <div className="font-semibold text-sm">Notifications</div>
-          {unread > 0 && (
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={markAllRead}>
-              <Check className="h-3 w-3 mr-1" /> Mark all read
-            </Button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent align="end" className="w-80 p-0">
+        <div className="flex items-center justify-between px-3 py-2 border-b">
+          <span className="text-sm font-medium">Notifications</span>
+
+          {unreadCount > 0 && (
+            <span className="text-xs text-muted-foreground">
+              {unreadCount} new
+            </span>
           )}
         </div>
-        <div className="max-h-96 overflow-y-auto">
-          {notifs.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground">You're all caught up</div>
-          ) : notifs.map((n) => (
-            <div key={n.id} className={`p-3 border-b last:border-b-0 hover:bg-muted/50 ${!n.is_read ? "bg-primary/5" : ""}`}>
-              <div className="flex items-start gap-2">
-                {!n.is_read && <div className="h-2 w-2 rounded-full bg-primary mt-1.5 shrink-0" />}
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm">{n.title}</div>
-                  {n.body && <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.body}</div>}
-                  <div className="text-[10px] text-muted-foreground mt-1">{new Date(n.created_at).toLocaleString()}</div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="p-2 border-t">
-          <Link to="/notifications" onClick={() => setOpen(false)}>
-            <Button variant="ghost" size="sm" className="w-full text-xs">View all</Button>
-          </Link>
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
 
-// Ensure fresh unread badge on mount even before realtime kicks in
-export function useSyncNotifications() {
-  const qc = useQueryClient();
-  useEffect(() => {
-    qc.invalidateQueries({ queryKey: ["notifications-panel"] });
-  }, [qc]);
+        <div className="max-h-80 overflow-y-auto">
+          {notifications.length === 0 ? (
+            <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+              No notifications yet.
+            </div>
+          ) : (
+            notifications.map((n) => (
+              <div
+                key={n.id}
+                className="px-3 py-2.5 border-b last:border-0 text-sm hover:bg-muted/50 transition-colors"
+              >
+                {n.title && (
+                  <p className="font-medium leading-snug">{n.title}</p>
+                )}
+
+                {(n.message ?? n.body) && (
+                  <p className="text-muted-foreground line-clamp-2">
+                    {n.message ?? n.body}
+                  </p>
+                )}
+
+                {n.created_at && (
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    {new Date(n.created_at).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }

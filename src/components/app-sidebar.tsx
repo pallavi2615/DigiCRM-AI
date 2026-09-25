@@ -12,13 +12,13 @@ import {
   Calendar, Video, BarChart3, Sparkles, FileText, Zap, Bell, Settings, ScrollText,
   Landmark, Home, Laptop, Package, Stethoscope, GraduationCap, ShieldCheck, Car, Plane, Factory,
   Rocket, LifeBuoy, Radio, Crown, Layers, Inbox, TrendingUp, Activity, Wallet, HandCoins,
-  Clock,   // ⭐ ADD THIS
+  Clock,
 } from "lucide-react";
 
 const primary = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
   { title: "Leads", url: "/leads", icon: Users },
-  { title: "Follow-ups", url: "/followups", icon: Clock },   // ⭐ ADD THIS
+  { title: "Follow-ups", url: "/followups", icon: Clock },
   { title: "Contacts", url: "/contacts", icon: UserCircle },
   { title: "Companies", url: "/companies", icon: Building2 },
   { title: "Pipeline", url: "/pipeline", icon: KanbanSquare },
@@ -94,16 +94,28 @@ export function AppSidebar() {
   const collapsed = state === "collapsed";
   const { roles } = useAuth();
   const access = useIndustryAccess();
-  const { group: activeGroup, activeName } = useActiveIndustry();
+
+  // NOTE: useActiveIndustry() returns "activeGroup" (not "group").
+  // Destructuring it as `group: activeGroup` was silently producing
+  // `undefined`, which is why the industry filter never actually filtered.
+  const { activeGroup, activeName } = useActiveIndustry();
+
   const isSuperAdmin = roles.includes("super_admin");
   const isAdmin = isSuperAdmin || roles.includes("admin");
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isActive = (url: string) => pathname === url || pathname.startsWith(url + "/");
+
+  // Only filters the CRM items already in the `industries` list above
+  // (never pulls in extra sub-industries from the taxonomy). When an
+  // industry is selected via the CRM switcher, only that industry's
+  // items show; when "All industries" is active, everything the user
+  // has access to shows.
   const visibleIndustries = industries.filter((i) => {
-    const g = groupForRoute(i.url);
     if (!access.canUseRoute(i.url)) return false;
-    return true;
+    if (!activeGroup) return true;
+    return groupForRoute(i.url) === activeGroup;
   });
+
   const industryLabel = activeGroup ? `${activeName} CRM` : "Industry CRMs";
 
   const renderGroup = (label: string, items: typeof primary) => (

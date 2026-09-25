@@ -1,82 +1,252 @@
-import { useSyncExternalStore, useCallback } from "react";
-import { useIndustryAccess } from "@/lib/industry-access";
-import { INDUSTRY_GROUPS } from "@/lib/industry-taxonomy";
+import {
+  useCallback,
+  useMemo,
+  useSyncExternalStore,
+} from "react";
 
-/**
- * The "active CRM" — which industry workspace the person is currently working
- * inside. Everything they see (menu, leads, pipeline, tasks, tickets, reports)
- * is narrowed to this industry. The list of industries a person may choose from
- * comes from their account's industry assignments, which the database policies
- * enforce independently of anything the browser does.
- */
+import {
+  INDUSTRY_GROUPS,
+  type IndustryGroup,
+} from "@/lib/industry-taxonomy";
+
+import { useIndustryAccess } from "@/lib/industry-access";
 
 export const ALL_CRMS = "all";
-const KEY = "digicrm.active_crm";
 
-let current: string = typeof window === "undefined" ? ALL_CRMS : localStorage.getItem(KEY) || ALL_CRMS;
+type IndustrySlug = IndustryGroup["slug"];
+
+let activeIndustry: string = ALL_CRMS;
+
 const listeners = new Set<() => void>();
 
-function subscribe(fn: () => void) {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
+function subscribe(
+  listener: () => void,
+) {
+  listeners.add(listener);
+
+  return () => {
+    listeners.delete(listener);
+  };
 }
+
 function getSnapshot() {
-  return current;
+  return activeIndustry;
 }
+
 function getServerSnapshot() {
   return ALL_CRMS;
 }
 
-export function setActiveIndustry(slug: string) {
-  current = slug;
-  if (typeof window !== "undefined") localStorage.setItem(KEY, slug);
-  listeners.forEach((fn) => fn());
+function updateActiveIndustry(
+  slug: string,
+) {
+  if (activeIndustry === slug) {
+    return;
+  }
+
+  activeIndustry = slug;
+
+  listeners.forEach((listener) => {
+    listener();
+  });
 }
 
-export interface ActiveIndustry {
-  loading: boolean;
-  /** Industries this person may open. */
-  allowed: Array<{ slug: string; name: string }>;
-  /** Selected industry slug, or "all" when the person works across industries. */
-  active: string;
-  /** The industry to filter records by, or null when nothing is narrowed. */
-  group: string | null;
-  /** Display name of the active industry. */
-  activeName: string;
-  setActive: (slug: string) => void;
-  /** True when the person has more than one industry to choose from. */
-  canSwitch: boolean;
+export function setActiveIndustry(
+  slug: string,
+) {
+  updateActiveIndustry(slug);
 }
 
-export function useActiveIndustry(): ActiveIndustry {
+export function getActiveIndustry() {
+  return activeIndustry;
+}
+
+export function useActiveIndustry() {
   const access = useIndustryAccess();
-  const stored = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
-  const allowed = access.unrestricted
-    ? INDUSTRY_GROUPS.map((g) => ({ slug: g.slug, name: g.name }))
-    : INDUSTRY_GROUPS.filter((g) => access.groups.includes(g.slug)).map((g) => ({ slug: g.slug, name: g.name }));
+  const active = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getServerSnapshot,
+  );
 
-  // Someone assigned to exactly one industry is always locked into it.
-  const locked = !access.unrestricted && allowed.length === 1 ? allowed[0]!.slug : null;
-  const valid = stored === ALL_CRMS || allowed.some((g) => g.slug === stored);
-  const active = locked ?? (valid ? stored : ALL_CRMS);
+  const allowed = useMemo(() => {
+    if (access.unrestricted) {
+      return INDUSTRY_GROUPS.map(
+        (group) => ({
+          slug: group.slug,
+          name: group.name,
+        }),
+      );
+    }
 
-  const setActive = useCallback((slug: string) => {
-    setActiveIndustry(slug);
-  }, []);
+    return INDUSTRY_GROUPS
+      .filter((group) =>
+        access.groups.includes(
+          group.slug,
+        ),
+      )
+      .map((group) => ({
+        slug: group.slug,
+        name: group.name,
+      }));
+  }, [
+    access.unrestricted,
+    access.groups,
+  ]);
+
+  const validActive =
+    active === ALL_CRMS ||
+    allowed.some(
+      (item) => item.slug === active,
+    );
+
+  const actualActive = validActive
+    ? active
+    : ALL_CRMS;
+
+  const activeGroup =
+    actualActive === ALL_CRMS
+      ? null
+      : INDUSTRY_GROUPS.find(
+          (group) =>
+            group.slug === actualActive,
+        )?.slug ?? null;
+
+  const activeName =
+    actualActive === ALL_CRMS
+      ? "All industries"
+      : INDUSTRY_GROUPS.find(
+          (group) =>
+            group.slug === actualActive,
+        )?.name ?? "All industries";
+
+  const setActive = useCallback(
+    (slug: string) => {
+      if (slug === ALL_CRMS) {
+        updateActiveIndustry(
+          ALL_CRMS,
+        );
+        return;
+      }
+
+      const exists = allowed.some(
+        (item) =>
+          item.slug === slug,
+      );
+
+      if (!exists) {
+        return;
+      }
+
+      updateActiveIndustry(slug);
+    },
+    [allowed],
+  );
 
   return {
-    loading: access.loading,
+    active: actualActive,
+    activeGroup,
+    activeName,
     allowed,
-    active,
-    group: active === ALL_CRMS ? null : active,
-    activeName: allowed.find((g) => g.slug === active)?.name ?? "All industries",
+    canSwitch: allowed.length > 1,
+    loading: access.loading,
     setActive,
-    canSwitch: !locked && allowed.length > 1,
   };
 }
 
-/** Narrows a Supabase query to one industry. */
-export function scopeToIndustry<T extends { eq: (c: string, v: string) => T }>(query: T, group: string | null): T {
-  return group ? query.eq("industry_group", group) : query;
+const ROUTE_GROUPS: Array<{
+  routes: string[];
+  group: IndustrySlug;
+}> = [
+  {
+    routes: ["/fintech"],
+    group: "financial-services",
+  },
+  {
+    routes: ["/realestate"],
+    group: "property",
+  },
+  {
+    routes: ["/it"],
+    group: "professional-services",
+  },
+  {
+    routes: ["/productsales"],
+    group: "commerce",
+  },
+  {
+    routes: [
+      "/industry/healthcare-clinics",
+    ],
+    group: "healthcare",
+  },
+  {
+    routes: [
+      "/industry/education",
+    ],
+    group: "education",
+  },
+  {
+    routes: [
+      "/industry/insurance",
+    ],
+    group: "financial-services",
+  },
+  {
+    routes: [
+      "/industry/automotive",
+    ],
+    group: "mobility-supply-chain",
+  },
+  {
+    routes: [
+      "/industry/travel",
+    ],
+    group: "mobility-supply-chain",
+  },
+  {
+    routes: [
+      "/industry/manufacturing",
+    ],
+    group: "industrial",
+  },
+];
+
+export function groupForRoute(
+  route: string,
+): IndustrySlug | null {
+  const match = ROUTE_GROUPS.find(
+    (item) =>
+      item.routes.some(
+        (candidate) =>
+          route === candidate ||
+          route.startsWith(
+            `${candidate}/`,
+          ),
+      ),
+  );
+
+  return match?.group ?? null;
+}
+
+export function scopeToIndustry<
+  T extends {
+    eq: (
+      column: string,
+      value: string,
+    ) => T;
+  },
+>(
+  query: T,
+  group: IndustrySlug | null,
+): T {
+  if (!group) {
+    return query;
+  }
+
+  return query.eq(
+    "industry_group",
+    group,
+  );
 }
