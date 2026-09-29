@@ -25,6 +25,72 @@ export const Route = createFileRoute("/auth")({
 
 type Mode = "login" | "signup" | "forgot" | "reset";
 
+// GET /api/v1/auth/my-permissions
+type MyPermissions = {
+  role: string;
+  is_super_admin: boolean;
+  permissions: Record<string, string[]>;
+  industries: string[]; // subscribed industry keys, e.g. ["real_estate"]
+  nav: Record<string, boolean>;
+};
+
+// ------------------------------------------------------------
+// Industry -> CRM landing route
+// ⚠️ Apni real routes ke hisaab se paths badlo.
+// Key = backend industry key (Industry.key), value = route jahan us industry ka CRM khulta hai.
+// ------------------------------------------------------------
+const INDUSTRY_HOME: Record<string, string> = {
+  it_company: "/it",
+  real_estate: "/realestate",
+  coaching: "/coaching",
+};
+const DEFAULT_HOME = "/dashboard";
+
+function resolveHome(p: MyPermissions | null): string {
+  if (!p || p.is_super_admin) return DEFAULT_HOME; // super admin ke paas sab industries hain
+  const active = p.industries?.[0];
+  return (active && INDUSTRY_HOME[active]) || DEFAULT_HOME;
+}
+
+function homeFromStorage(): string {
+  try {
+    const raw = localStorage.getItem("permissions");
+    return resolveHome(raw ? (JSON.parse(raw) as MyPermissions) : null);
+  } catch {
+    return DEFAULT_HOME;
+  }
+}
+
+function clearPermissionsStorage() {
+  localStorage.removeItem("permissions");
+  localStorage.removeItem("active_industry");
+}
+
+// Login ke turant baad permissions + industries fetch karke store karo.
+// Fail ho to login block nahi hota (null return).
+async function loadPermissions(accessToken: string): Promise<MyPermissions | null> {
+  try {
+    const p = await apiFetch("/api/v1/auth/my-permissions", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    localStorage.setItem("permissions", JSON.stringify(p));
+
+    // Non-super-admin: pehli subscribed industry active hogi
+    const active = p.is_super_admin ? null : p.industries?.[0] ?? null;
+    if (active) localStorage.setItem("active_industry", active);
+    else localStorage.removeItem("active_industry");
+
+    notifyAuthChanged();
+    return p as MyPermissions;
+  } catch (err) {
+    console.error("Failed to load permissions:", err);
+    clearPermissionsStorage();
+    return null;
+  }
+}
+
 function passwordScore(pw: string): number {
   let s = 0;
   if (pw.length >= 8) s++;
@@ -42,8 +108,8 @@ function unwrap(raw: any) {
 
 // Backend AuthResponse: { user, tokens: {access_token, refresh_token, expires_in}, tenant }
 // Flat shape ({ access_token, refresh_token, user, tenant }) bhi handle hota hai.
-// user.role = "super_admin" | "admin" | "sales_manager" | "sales_executive"
-function saveSession(raw: any) {
+// Returns the access token so caller can use it for follow-up calls.
+function saveSession(raw: any): string {
   const data = unwrap(raw);
 
   const t = data?.tokens ?? data;
@@ -54,6 +120,9 @@ function saveSession(raw: any) {
     console.error("Unexpected auth response:", raw);
     throw new Error("Login response did not contain an access token");
   }
+
+  // Purane user ki permissions/industry na bachein
+  clearPermissionsStorage();
 
   localStorage.setItem("access_token", access);
   if (refresh) localStorage.setItem("refresh_token", refresh);
@@ -67,6 +136,7 @@ function saveSession(raw: any) {
 
   // useAuth() ko same tab mein turant update karo
   notifyAuthChanged();
+  return access;
 }
 
 function AuthPage() {
@@ -92,14 +162,28 @@ function AuthPage() {
     if (resetToken) setMode("reset");
   }, [resetToken]);
 
-  // Already logged in hai to dashboard bhejo (reset flow ko chhod ke)
+  // Already logged in hai to us user ki industry ke CRM par bhejo (reset flow ko chhod ke)
   useEffect(() => {
     if (resetToken) return;
     const token = localStorage.getItem("access_token");
     if (token) {
-      navigate({ to: "/dashboard" });
+      navigate({ to: homeFromStorage() as any });
     }
   }, [navigate, resetToken]);
+
+  // Session save -> permissions fetch -> industry ke CRM par redirect
+  const completeLogin = async (data: any) => {
+    const access = saveSession(data);
+    const perms = await loadPermissions(access);
+
+    if (!perms) {
+      toast.warning("Signed in, but could not load your workspace permissions.");
+    } else if (!perms.is_super_admin && perms.industries.length === 0) {
+      toast.warning("No active industry is assigned to your workspace yet.");
+    }
+
+    navigate({ to: resolveHome(perms) as any });
+  };
 
   // ---------------- LOGIN ----------------
   const handleLogin = async (e: React.FormEvent) => {
@@ -115,7 +199,7 @@ function AuthPage() {
 
       // First-time login: backend temp_token deta hai, full session nahi
       const tmp = data?.temp_token;
-      if (data?.must_change_password || tmp) {
+      if (data?.requires_password_change || data?.must_change_password || tmp) {
         if (!tmp) throw new Error("Temporary token missing in response");
         setTempToken(tmp);
         setPassword("");
@@ -126,10 +210,8 @@ function AuthPage() {
         return;
       }
 
-      saveSession(data);
-
+      await completeLogin(data);
       toast.success("Welcome back!");
-      navigate({ to: "/dashboard" });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Login failed");
     } finally {
@@ -154,14 +236,12 @@ function AuthPage() {
       });
       const data = unwrap(raw);
 
-      saveSession(data);
-
       if (data?.tenant) {
         sessionStorage.setItem("signup_tenant", JSON.stringify(data.tenant));
       }
 
+      await completeLogin(data);
       toast.success("Account created successfully!");
-      navigate({ to: "/dashboard" });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Signup failed");
     } finally {
@@ -235,6 +315,7 @@ function AuthPage() {
 
       // Backend ne refresh token revoke kar diya hai, local session bhi saaf karo
       clearAuthStorage();
+      clearPermissionsStorage();
 
       setTempToken(null);
       setNewPassword("");
