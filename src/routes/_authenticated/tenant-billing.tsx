@@ -60,11 +60,11 @@ function TenantBilling() {
         supabase
           .from("pack_records")
           .select("id, group_slug, pack_slug, stage, value, won, created_at")
-          .eq("tenant_id", tenantId!),
+          .eq("tenant_id", String(tenantId)),
         supabase
           .from("leads")
           .select("id, status, estimated_value")
-          .eq("tenant_id", tenantId!)
+          .eq("tenant_id", String(tenantId))
           .is("deleted_at", null),
         supabase.from("affiliate_settings").select("default_commission_pct").limit(1).maybeSingle(),
       ]);

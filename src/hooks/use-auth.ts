@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
 
 export type AppRole = "super_admin" | "admin" | "sales_manager" | "sales_executive";
 
 interface StoredUser {
-  id: string;
+  id: string | number;
   email: string;
   full_name?: string | null;
   role?: AppRole;
@@ -14,6 +15,29 @@ export interface AuthState {
   user: StoredUser | null;
   roles: AppRole[];
   loading: boolean;
+}
+
+const AUTH_EVENT = "auth-changed";
+
+const AUTH_KEYS = [
+  "access_token",
+  "refresh_token",
+  "user",
+  "tenant",
+  "permissions",
+  "role",
+];
+
+/** Same tab ke saare useAuth() instances ko sync karne ke liye. */
+export function notifyAuthChanged() {
+  window.dispatchEvent(new Event(AUTH_EVENT));
+}
+
+/** Local session data saaf karo (backend call nahi karta). */
+export function clearAuthStorage() {
+  AUTH_KEYS.forEach((k) => localStorage.removeItem(k));
+  sessionStorage.removeItem("signup_tenant");
+  notifyAuthChanged();
 }
 
 function readAuthFromStorage(): { user: StoredUser | null; roles: AppRole[] } {
@@ -34,32 +58,50 @@ export function useAuth(): AuthState & {
   isAdmin: boolean;
   isManager: boolean;
   hasRole: (r: AppRole) => boolean;
-  logout: () => void;
+  logout: () => Promise<void>;
 } {
   const [state, setState] = useState<AuthState>({ user: null, roles: [], loading: true });
 
   useEffect(() => {
-    setState({ ...readAuthFromStorage(), loading: false });
+    const sync = () => setState({ ...readAuthFromStorage(), loading: false });
 
-    // Keep in sync if another tab logs in/out
+    sync();
+
+    // Doosre tab mein login/logout
     function onStorage(e: StorageEvent) {
-      if (e.key === "access_token" || e.key === "user") {
-        setState({ ...readAuthFromStorage(), loading: false });
-      }
+      if (e.key === "access_token" || e.key === "user") sync();
     }
+
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    // Same tab mein login/logout
+    window.addEventListener(AUTH_EVENT, sync);
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(AUTH_EVENT, sync);
+    };
   }, []);
 
   const isAdmin = state.roles.includes("super_admin") || state.roles.includes("admin");
   const isManager = isAdmin || state.roles.includes("sales_manager");
 
-  function logout() {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    localStorage.removeItem("user");
+  const logout = useCallback(async () => {
+    // Backend par refresh token invalidate karo
+    try {
+      const token = localStorage.getItem("access_token");
+      if (token) {
+        await apiFetch("/api/v1/auth/logout", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+    } catch {
+      // Network/401 fail ho to bhi local logout hona chahiye
+    }
+
+    clearAuthStorage();
     setState({ user: null, roles: [], loading: false });
-  }
+  }, []);
 
   return {
     ...state,

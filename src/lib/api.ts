@@ -370,5 +370,9 @@ export async function apiDownload(
   a.click();
   a.remove();
 
+  if (response.status === 204) {
+  return;
+  }
+
   window.URL.revokeObjectURL(url);
 }

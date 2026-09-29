@@ -1,10 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
-import { changeUserRole } from "@/lib/rbac.functions";
 import { diffRolePermissions } from "@/lib/permissions";
 import { useAuth } from "@/hooks/use-auth";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
 import { useMemo, useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -25,8 +22,6 @@ import { downloadCsv, objectsToCsv } from "@/lib/csv";
 import { notifyPermissionDenied } from "@/components/permission-denied";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ACCESS_GROUPS, fetchUserIndustries, setUserIndustries } from "@/lib/industry-access";
-
-// ⭐ FASTAPI IMPORTS
 import { useAutoFollowupSettings, useUpdateAutoFollowupSettings } from "@/lib/queries/tenants";
 import { apiFetch } from "@/lib/api";
 
@@ -42,13 +37,91 @@ const ROLE_RANK: Record<Role, number> = {
   super_admin: 4, admin: 3, sales_manager: 2, sales_executive: 1,
 };
 
+const ALL_ROLES: Role[] = ["super_admin", "admin", "sales_manager", "sales_executive"];
+
+/**
+ * Backend role strings can differ from the frontend ones
+ * (e.g. "manager" vs "sales_manager"). Normalise anything we receive.
+ */
+function normalizeRole(raw: string | null | undefined): Role {
+  const v = (raw ?? "").toLowerCase().trim().replace(/[\s-]+/g, "_");
+  if (v === "super_admin" || v === "superadmin") return "super_admin";
+  if (v === "admin") return "admin";
+  if (v === "sales_manager" || v === "manager") return "sales_manager";
+  return "sales_executive"; // "sales_executive" | "executive" | fallback
+}
+
+/** Default strings sent to PATCH /users/{id}/role. Must match app/core/constants.py. */
+const API_ROLE: Record<Role, string> = {
+  super_admin: "super_admin",
+  admin: "admin",
+  sales_manager: "manager",
+  sales_executive: "executive",
+};
+
+const roleLabel = (r: string) => r.replace(/_/g, " ");
+
+/* ------------------------------------------------------------------ */
+/* API types (match app/schemas/user.py — adjust if names differ)      */
+/* ------------------------------------------------------------------ */
+
+interface Me {
+  id: number;
+  email: string;
+  full_name: string | null;
+  phone?: string | null;
+  role: string;
+}
+
+interface TeamMember {
+  id: number;
+  email: string;
+  full_name: string | null;
+  role: string;
+  status?: string | null;
+}
+
+interface AuditLog {
+  id: number;
+  user_id: number | null;
+  user_name: string | null;
+  table_name: string;
+  row_id: string | null;
+  action: string;
+  description: string | null;
+  changes: Record<string, unknown> | null;
+  created_at: string;
+}
+
+interface AuditLogsResponse {
+  data: AuditLog[];
+  total: number;
+}
+
+// Table name the backend uses for user/role changes in the audit log.
+// Change this if your audit rows use a different table_name.
+const ROLE_AUDIT_TABLE = "users";
+
 function SettingsPage() {
-  const { user, roles, isAdmin } = useAuth();
+  const { roles, isAdmin } = useAuth();
   const qc = useQueryClient();
-  const userMetadata = (user as { user_metadata?: { full_name?: string; phone?: string } } | undefined)?.user_metadata;
-  const [fullName, setFullName] = useState(userMetadata?.full_name ?? "");
-  const [phone, setPhone] = useState(userMetadata?.phone ?? "");
+
+  /* ---------------- Profile (GET/PUT /users/me) ---------------- */
+  const { data: me } = useQuery({
+    queryKey: ["users", "me"],
+    queryFn: () => apiFetch<Me>("/api/v1/users/me"),
+  });
+
+  const [fullName, setFullName] = useState("");
+  const [phone, setPhone] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
+
+  useEffect(() => {
+    if (me) {
+      setFullName(me.full_name ?? "");
+      setPhone(me.phone ?? "");
+    }
+  }, [me]);
 
   useEffect(() => {
     const storedTenant = sessionStorage.getItem("signup_tenant");
@@ -62,37 +135,41 @@ function SettingsPage() {
     }
   }, []);
 
-  const name = userMetadata?.full_name ?? user?.email?.split("@")[0] ?? "User";
+  const name = me?.full_name ?? me?.email?.split("@")[0] ?? "User";
   const initials = name.split(/\s+/).slice(0, 2).map((s: string) => s[0]?.toUpperCase()).join("");
+  const displayRoles: Role[] = (roles.length ? roles : me?.role ? [me.role] : []).map((r) =>
+    normalizeRole(r as string)
+  );
 
   const saveProfile = useMutation({
-    mutationFn: async () => {
-      const { error } = await supabase.from("profiles").update({ full_name: fullName, phone }).eq("id", user!.id);
-      if (error) throw error;
-      await supabase.auth.updateUser({ data: { full_name: fullName, phone } });
+    mutationFn: () =>
+      apiFetch<Me>("/api/v1/users/me", {
+        method: "PUT",
+        body: JSON.stringify({ full_name: fullName, phone }),
+      }),
+    onSuccess: () => {
+      toast.success("Profile updated");
+      qc.invalidateQueries({ queryKey: ["users", "me"] });
     },
-    onSuccess: () => toast.success("Profile updated"),
     onError: (e: Error) => toast.error(e.message),
   });
 
+  /* ---------------- Team members (GET /users) ---------------- */
   const { data: teamMembers } = useQuery({
     queryKey: ["team-members"],
     enabled: isAdmin,
-    queryFn: async () => {
-      const { data: profiles } = await supabase.from("profiles").select("id, full_name, email, avatar_url").order("full_name");
-      const { data: userRoles } = await supabase.from("user_roles").select("user_id, role");
-      return (profiles ?? []).map(p => ({
-        ...p,
-        roles: (userRoles ?? []).filter(r => r.user_id === p.id).map(r => r.role as Role),
-      }));
-    },
+    queryFn: () => apiFetch<TeamMember[]>("/api/v1/users?limit=200"),
   });
 
-  const changeRole = useServerFn(changeUserRole);
-
+  /* ---------------- Change role (PATCH /users/{id}/role) ---------------- */
   const updateRole = useMutation({
-    mutationFn: async ({ userId, role }: { userId: string; role: Role }) => {
-      await changeRole({ data: { userId, role } });
+    mutationFn: ({ userId, role }: { userId: number; role: Role }) => {
+      // prefer the exact string the backend already uses for that role
+      const apiRole = teamMembers?.find((m) => normalizeRole(m.role) === role)?.role ?? API_ROLE[role];
+      return apiFetch<TeamMember>(`/api/v1/users/${userId}/role`, {
+        method: "PATCH",
+        body: JSON.stringify({ role: apiRole }),
+      });
     },
     onSuccess: () => {
       toast.success("Role updated");
@@ -102,27 +179,28 @@ function SettingsPage() {
     onError: (e: Error) => notifyPermissionDenied(e),
   });
 
+  /* ---------------- Role audit (GET /audit-logs) ---------------- */
   const { data: roleAudit } = useQuery({
     queryKey: ["role-audit"],
     enabled: isAdmin,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("activities")
-        .select("id, action, description, metadata, created_at")
-        .eq("entity_type", "user_roles")
-        .order("created_at", { ascending: false })
-        .limit(200);
-      if (error) throw error;
-      return data ?? [];
+      const res = await apiFetch<AuditLogsResponse>(
+        `/api/v1/audit-logs?table=${ROLE_AUDIT_TABLE}&limit=200`
+      );
+      // keep only entries that actually changed a role
+      return (res.data ?? []).filter((a) => {
+        const c = a.changes as Record<string, unknown> | null;
+        return !!c && "role" in c;
+      });
     },
   });
 
   const [pendingRole, setPendingRole] = useState<
-    { userId: string; name: string; from: Role; to: Role } | null
+    { userId: number; name: string; from: Role; to: Role } | null
   >(null);
   const [industryFor, setIndustryFor] = useState<{ id: string; name: string } | null>(null);
 
-  const myRank = Math.max(0, ...roles.map((r) => ROLE_RANK[r as Role] ?? 0));
+  const myRank = Math.max(0, ...displayRoles.map((r) => ROLE_RANK[r] ?? 0));
   const pendingDelta = pendingRole ? diffRolePermissions(pendingRole.from, pendingRole.to) : [];
 
   const [auditSearch, setAuditSearch] = useState("");
@@ -133,21 +211,27 @@ function SettingsPage() {
     const term = auditSearch.trim().toLowerCase();
     return (roleAudit ?? [])
       .map((a) => {
-        const meta = (a.metadata ?? {}) as Record<string, string | null>;
+        const roleChange = (a.changes?.["role"] ?? {}) as { from?: string | null; to?: string | null };
+        const meta: Record<string, string | null> = {
+          actor_email: a.user_name,
+          target_email: a.description,
+          old_role: roleChange.from ?? null,
+          new_role: roleChange.to ?? null,
+        };
         return {
           ...a,
           meta,
           delta: diffRolePermissions(
-            (meta['old_role'] as Role) ?? null,
-            (meta['new_role'] as Role) ?? null,
+            (meta["old_role"] as Role) ?? null,
+            (meta["new_role"] as Role) ?? null,
           ),
         };
       })
       .filter((a) => {
         if (auditAction !== "all" && a.action !== auditAction) return false;
-        if (auditRole !== "all" && a.meta['old_role'] !== auditRole && a.meta['new_role'] !== auditRole) return false;
+        if (auditRole !== "all" && a.meta["old_role"] !== auditRole && a.meta["new_role"] !== auditRole) return false;
         if (!term) return true;
-        return [a.description, a.meta['actor_email'], a.meta['target_email'], a.meta['old_role'], a.meta['new_role']]
+        return [a.description, a.meta["actor_email"], a.meta["target_email"], a.meta["old_role"], a.meta["new_role"]]
           .some((v) => (v ?? "").toLowerCase().includes(term));
       });
   }, [roleAudit, auditSearch, auditAction, auditRole]);
@@ -156,10 +240,10 @@ function SettingsPage() {
     const rows = auditRows.map((a) => ({
       changed_at: new Date(a.created_at).toISOString(),
       action: a.action,
-      actor: a.meta['actor_email'] ?? "system",
-      target: a.meta['target_email'] ?? a.meta['target_user_id'] ?? "",
-      old_role: a.meta['old_role'] ?? "",
-      new_role: a.meta['new_role'] ?? "",
+      actor: a.meta["actor_email"] ?? "system",
+      target: a.meta["target_email"] ?? a.row_id ?? "",
+      old_role: a.meta["old_role"] ?? "",
+      new_role: a.meta["new_role"] ?? "",
       description: a.description ?? "",
       permissions_added: a.delta
         .filter((d) => d.gained.length)
@@ -186,7 +270,7 @@ function SettingsPage() {
         <p className="text-muted-foreground text-sm mt-1">Manage your profile and workspace preferences.</p>
       </div>
 
-      {/* ============ PROFILE CARD (Supabase) ============ */}
+      {/* ============ PROFILE CARD ============ */}
       <Card className="shadow-card">
         <CardHeader><CardTitle className="text-base">Profile</CardTitle></CardHeader>
         <CardContent className="space-y-4">
@@ -200,10 +284,10 @@ function SettingsPage() {
 
               <div>
                 <p className="font-medium text-lg">{name}</p>
-                <p className="text-sm text-muted-foreground">{user?.email}</p>
+                <p className="text-sm text-muted-foreground">{me?.email}</p>
 
                 <div className="flex gap-1 mt-2">
-                  {roles.map((r) => (
+                  {displayRoles.map((r) => (
                     <Badge key={r} variant="secondary" className="capitalize text-xs">
                       {r.replace("_", " ")}
                     </Badge>
@@ -246,46 +330,62 @@ function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* ============ ⭐ API WEBHOOK URL (FastAPI) ============ */}
+      {/* ============ API WEBHOOK URL ============ */}
       <ApiWebhookSection />
 
-      {/* ============ ⭐ AUTO-FOLLOWUP (FastAPI) ============ */}
+      {/* ============ AUTO-FOLLOWUP ============ */}
       <AutoFollowupSection />
 
-      {/* ============ TEAM MEMBERS (Supabase) ============ */}
+      {/* ============ TEAM MEMBERS ============ */}
       {isAdmin && (
         <Card className="shadow-card">
           <CardHeader><CardTitle className="text-base">Team Members</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {(teamMembers ?? []).map(m => (
+            {(teamMembers ?? []).map((m) => (
               <div key={m.id} className="flex items-center gap-3 p-3 rounded border flex-wrap">
-                <Avatar className="h-9 w-9"><AvatarFallback className="text-xs bg-primary/10 text-primary">{(m.full_name || m.email || "?").slice(0,2).toUpperCase()}</AvatarFallback></Avatar>
+                <Avatar className="h-9 w-9"><AvatarFallback className="text-xs bg-primary/10 text-primary">{(m.full_name || m.email || "?").slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-sm">{m.full_name || "—"}</p>
                   <p className="text-xs text-muted-foreground truncate">{m.email}</p>
                 </div>
-                <Button size="sm" variant="outline" onClick={() => setIndustryFor({ id: m.id, name: m.full_name || m.email || "this user" })}>
+                <Button size="sm" variant="outline" onClick={() => setIndustryFor({ id: String(m.id), name: m.full_name || m.email || "this user" })}>
                   <Layers className="mr-2 h-4 w-4" /> Industries
                 </Button>
-                <Select
-                  value={m.roles[0] ?? "sales_executive"}
-                  onValueChange={(v) => setPendingRole({
-                    userId: m.id,
-                    name: m.full_name || m.email || "this user",
-                    from: (m.roles[0] ?? "sales_executive") as Role,
-                    to: v as Role,
-                  })}
-                  disabled={m.id === user?.id || updateRole.isPending}
-                >
-                  <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {(["super_admin","admin","sales_manager","sales_executive"] as Role[])
-                      .filter((r) => ROLE_RANK[r] <= myRank)
-                      .map(r => (
-                        <SelectItem key={r} value={r} className="capitalize">{r.replace("_"," ")}</SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
+                {(() => {
+                  const current = normalizeRole(m.role);
+                  // always include the member's current role so it is displayed
+                  const options = ALL_ROLES.filter((r) => ROLE_RANK[r] <= myRank || r === current);
+                  return (
+                    <Select
+                      value={current}
+                      onValueChange={(v) => setPendingRole({
+                        userId: m.id,
+                        name: m.full_name || m.email || "this user",
+                        from: current,
+                        to: v as Role,
+                      })}
+                      disabled={m.id === me?.id || updateRole.isPending}
+                    >
+                      <SelectTrigger className="w-44">
+                        <SelectValue>
+                          <span className="capitalize">{roleLabel(current)}</span>
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {options.map((r) => (
+                          <SelectItem
+                            key={r}
+                            value={r}
+                            className="capitalize"
+                            disabled={ROLE_RANK[r] > myRank}
+                          >
+                            {roleLabel(r)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  );
+                })()}
               </div>
             ))}
 
@@ -366,6 +466,7 @@ function SettingsPage() {
                 <SelectTrigger className="w-44"><SelectValue placeholder="Event" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All events</SelectItem>
+                  <SelectItem value="updated">Updated</SelectItem>
                   <SelectItem value="role_granted">Role granted</SelectItem>
                   <SelectItem value="role_changed">Role changed</SelectItem>
                   <SelectItem value="role_revoked">Role revoked</SelectItem>
@@ -375,8 +476,8 @@ function SettingsPage() {
                 <SelectTrigger className="w-44"><SelectValue placeholder="Role" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Any role</SelectItem>
-                  {(["super_admin","admin","sales_manager","sales_executive"] as Role[]).map(r => (
-                    <SelectItem key={r} value={r} className="capitalize">{r.replace("_"," ")}</SelectItem>
+                  {ALL_ROLES.map((r) => (
+                    <SelectItem key={r} value={r} className="capitalize">{r.replace("_", " ")}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -391,7 +492,7 @@ function SettingsPage() {
                     <div className="min-w-0">
                       <p className="text-sm font-medium">{a.description}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        by {a.meta['actor_email'] ?? "system"} · {new Date(a.created_at).toLocaleString()}
+                        by {a.meta["actor_email"] ?? "system"} · {new Date(a.created_at).toLocaleString()}
                       </p>
                     </div>
                     <Badge variant="secondary" className="text-[10px] capitalize shrink-0">
@@ -438,7 +539,7 @@ function SettingsPage() {
 }
 
 // ============================================================
-// ⭐ API WEBHOOK SECTION (FastAPI)
+// API WEBHOOK SECTION (unchanged — already FastAPI)
 // ============================================================
 
 function ApiWebhookSection() {
@@ -498,7 +599,7 @@ function ApiWebhookSection() {
 }
 
 // ============================================================
-// ⭐ AUTO-FOLLOWUP SECTION (FastAPI)
+// AUTO-FOLLOWUP SECTION (unchanged — already FastAPI)
 // ============================================================
 
 function AutoFollowupSection() {
@@ -630,7 +731,10 @@ function AutoFollowupSection() {
 }
 
 // ============================================================
-// INDUSTRY ACCESS DIALOG (Supabase — as-is)
+// INDUSTRY ACCESS DIALOG
+// NOTE: still relies on "@/lib/industry-access" (fetchUserIndustries /
+// setUserIndustries), which likely uses Supabase. No FastAPI route was
+// provided for it, so it is left as-is.
 // ============================================================
 
 function IndustryAccessDialog({ member, onClose }: { member: { id: string; name: string } | null; onClose: () => void }) {

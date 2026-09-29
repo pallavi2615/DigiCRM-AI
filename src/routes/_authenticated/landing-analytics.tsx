@@ -1,12 +1,12 @@
 import { RoleGuard, ADMINS } from "@/components/role-guard";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
-import { useMemo, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, TrendingUp, MousePointerClick, LogOut, Activity, ShieldAlert } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { apiFetch } from "@/lib/api"; // <-- adjust path if your api file lives elsewhere
 
 export const Route = createFileRoute("/_authenticated/landing-analytics")({
   head: () => ({ meta: [{ title: "Landing Analytics — DigiCRM AI" }, { name: "robots", content: "noindex" }] }),
@@ -17,72 +17,62 @@ export const Route = createFileRoute("/_authenticated/landing-analytics")({
   ),
 });
 
-type Tenant = { id: string; name: string; slug: string };
-type Ev = {
-  tenant_id: string; event_type: string; source: string | null;
-  utm_source: string | null; referrer: string | null; session_id: string | null;
-  created_at: string;
-};
+/* ------------------------------------------------------------------ */
+/* API types (match app/schemas/landing_analytics.py)                  */
+/* ------------------------------------------------------------------ */
+
+type Tenant = { id: number; name: string; subdomain?: string | null };
+
+interface LandingAnalytics {
+  kpi: {
+    sessions: number;
+    views: number;
+    submits: number;
+    conversion_rate: number;
+    bounce_rate: number;
+  };
+  top_sources: { source: string; sessions: number; percentage: number }[];
+  recent_events: {
+    id?: number;
+    event_type: string;
+    source: string | null;
+    session_id?: string | null;
+    created_at: string;
+  }[];
+  range_days: number;
+}
 
 function LandingAnalyticsPage() {
-  const { isAdmin, loading } = useAuth();
+  const { isAdmin, loading, roles } = useAuth();
+  const isSuper = roles.includes("super_admin");
+
   const [tenantId, setTenantId] = useState<string>("all");
   const [days, setDays] = useState<string>("7");
 
+  // Tenant list — only SuperAdmin can pick a tenant (backend scopes everyone else to their own)
   const { data: tenants = [] } = useQuery({
-    queryKey: ["la-tenants"],
+    queryKey: ["superadmin", "clients"],
+    enabled: isAdmin && isSuper,
     queryFn: async () => {
-      const { data } = await supabase.from("tenants").select("id, name, slug").order("name");
-      return (data ?? []) as Tenant[];
+      const res = await apiFetch<Tenant[] | { items: Tenant[] }>("/api/v1/superadmin/clients");
+      return Array.isArray(res) ? res : res.items ?? [];
     },
-    enabled: isAdmin,
   });
 
-  const { data: events = [], isLoading } = useQuery({
-    queryKey: ["la-events", tenantId, days],
-    queryFn: async () => {
-      const since = new Date(Date.now() - Number(days) * 86400000).toISOString();
-      let q = supabase
-        .from("landing_page_events")
-        .select("tenant_id, event_type, source, utm_source, referrer, session_id, created_at")
-        .gte("created_at", since)
-        .order("created_at", { ascending: false })
-        .limit(5000);
-      if (tenantId !== "all") q = q.eq("tenant_id", tenantId);
-      const { data, error } = await q;
-      if (error) throw error;
-      return (data ?? []) as Ev[];
-    },
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["landing-analytics", isSuper ? tenantId : "own", days],
     enabled: isAdmin,
+    placeholderData: keepPreviousData,
+    queryFn: () => {
+      const p = new URLSearchParams({ days });
+      if (isSuper && tenantId !== "all") p.set("tenant_id", tenantId);
+      return apiFetch<LandingAnalytics>(`/api/v1/landing/analytics?${p.toString()}`);
+    },
   });
 
-  const stats = useMemo(() => {
-    const sessions = new Set<string>();
-    const bouncedSessions = new Set<string>();
-    const engagedSessions = new Set<string>();
-    const submittedSessions = new Set<string>();
-    let views = 0, submits = 0, bounces = 0;
-    const bySource = new Map<string, number>();
-
-    for (const e of events) {
-      if (e.session_id) sessions.add(e.session_id);
-      if (e.event_type === "view") { views++; bySource.set(e.source ?? "direct", (bySource.get(e.source ?? "direct") ?? 0) + 1); }
-      if (e.event_type === "submit") { submits++; if (e.session_id) submittedSessions.add(e.session_id); }
-      if (e.event_type === "bounce" && e.session_id) bouncedSessions.add(e.session_id);
-      if (e.event_type === "engaged" && e.session_id) engagedSessions.add(e.session_id);
-    }
-    for (const s of submittedSessions) bouncedSessions.delete(s);
-    for (const s of engagedSessions) bouncedSessions.delete(s);
-    bounces = bouncedSessions.size;
-    const totalSessions = sessions.size || 1;
-    return {
-      views, submits, bounces,
-      totalSessions: sessions.size,
-      conversion: views > 0 ? (submits / views) * 100 : 0,
-      bounceRate: (bounces / totalSessions) * 100,
-      bySource: Array.from(bySource.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8),
-    };
-  }, [events]);
+  const kpi = data?.kpi;
+  const topSources = data?.top_sources ?? [];
+  const recentEvents = data?.recent_events ?? [];
 
   if (!loading && !isAdmin) {
     return (
@@ -94,6 +84,8 @@ function LandingAnalyticsPage() {
     );
   }
 
+  const bounceRate = kpi?.bounce_rate ?? 0;
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-3">
@@ -102,17 +94,19 @@ function LandingAnalyticsPage() {
           <p className="text-sm text-muted-foreground mt-1">Views, sources, bounce rate, and form conversions across tenant landing pages.</p>
         </div>
         <div className="flex gap-2">
-          <Select value={tenantId} onValueChange={setTenantId}>
-            <SelectTrigger className="w-[220px]"><SelectValue placeholder="Tenant" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All tenants</SelectItem>
-              {tenants.map((t) => (
-                <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {isSuper && (
+            <Select value={tenantId} onValueChange={setTenantId}>
+              <SelectTrigger className="w-55"><SelectValue placeholder="Tenant" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All tenants</SelectItem>
+                {tenants.map((t) => (
+                  <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Select value={days} onValueChange={setDays}>
-            <SelectTrigger className="w-[130px]"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-32.5"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="1">Last 24h</SelectItem>
               <SelectItem value="7">Last 7 days</SelectItem>
@@ -123,26 +117,41 @@ function LandingAnalyticsPage() {
         </div>
       </div>
 
+      {error && !isLoading && (
+        <p className="text-sm text-destructive">
+          {error instanceof Error ? error.message : "Failed to load analytics."}
+        </p>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <KpiCard icon={<Activity className="h-4 w-4" />} label="Sessions" value={stats.totalSessions} />
-        <KpiCard icon={<MousePointerClick className="h-4 w-4" />} label="Views" value={stats.views} />
-        <KpiCard icon={<TrendingUp className="h-4 w-4" />} label="Submits" value={stats.submits} />
-        <KpiCard icon={<TrendingUp className="h-4 w-4" />} label="Conversion" value={`${stats.conversion.toFixed(1)}%`} />
-        <KpiCard icon={<LogOut className="h-4 w-4" />} label="Bounce rate" value={`${stats.bounceRate.toFixed(1)}%`} tone={stats.bounceRate > 60 ? "danger" : undefined} />
+        <KpiCard icon={<Activity className="h-4 w-4" />} label="Sessions" value={kpi?.sessions ?? 0} />
+        <KpiCard icon={<MousePointerClick className="h-4 w-4" />} label="Views" value={kpi?.views ?? 0} />
+        <KpiCard icon={<TrendingUp className="h-4 w-4" />} label="Submits" value={kpi?.submits ?? 0} />
+        <KpiCard icon={<TrendingUp className="h-4 w-4" />} label="Conversion" value={`${(kpi?.conversion_rate ?? 0).toFixed(1)}%`} />
+        <KpiCard
+          icon={<LogOut className="h-4 w-4" />}
+          label="Bounce rate"
+          value={`${bounceRate.toFixed(1)}%`}
+          tone={bounceRate > 60 ? "danger" : undefined}
+        />
       </div>
 
       <div className="grid md:grid-cols-2 gap-4">
         <Card>
           <CardHeader><CardTitle className="text-sm">Top sources</CardTitle></CardHeader>
           <CardContent>
-            {stats.bySource.length === 0 ? (
+            {isLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : topSources.length === 0 ? (
               <p className="text-sm text-muted-foreground">No traffic yet.</p>
             ) : (
               <ul className="space-y-2">
-                {stats.bySource.map(([src, count]) => (
-                  <li key={src} className="flex items-center justify-between text-sm">
-                    <span className="truncate">{src}</span>
-                    <span className="text-muted-foreground">{count}</span>
+                {topSources.map((s) => (
+                  <li key={s.source} className="flex items-center justify-between text-sm gap-3">
+                    <span className="truncate">{s.source}</span>
+                    <span className="text-muted-foreground whitespace-nowrap">
+                      {s.sessions} · {s.percentage.toFixed(1)}%
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -151,17 +160,21 @@ function LandingAnalyticsPage() {
         </Card>
         <Card>
           <CardHeader><CardTitle className="text-sm">Recent events</CardTitle></CardHeader>
-          <CardContent className="max-h-[360px] overflow-y-auto text-sm">
-            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> :
-              events.slice(0, 30).map((e, i) => (
-                <div key={i} className="flex items-center justify-between py-1 border-b last:border-0">
+          <CardContent className="max-h-90 overflow-y-auto text-sm">
+            {isLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : recentEvents.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No events in this range.</p>
+            ) : (
+              recentEvents.map((e, i) => (
+                <div key={e.id ?? i} className="flex items-center justify-between py-1 border-b last:border-0">
                   <span className="capitalize">{e.event_type}</span>
                   <span className="text-xs text-muted-foreground">
                     {e.source ?? "direct"} · {new Date(e.created_at).toLocaleTimeString()}
                   </span>
                 </div>
               ))
-            }
+            )}
           </CardContent>
         </Card>
       </div>
