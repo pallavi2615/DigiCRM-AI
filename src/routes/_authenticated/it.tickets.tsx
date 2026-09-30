@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
 import { useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -13,8 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Plus, Pencil, Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { useRealtimeTable } from "@/lib/use-realtime-table";
-import { escapePostgrestFilterValue } from "@/lib/utils";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_authenticated/it/tickets")({
   component: ITTicketsPage,
@@ -31,55 +29,85 @@ function ITTicketsPage() {
   const [statusF, setStatusF] = useState("all");
   const [open, setOpen] = useState(false);
   const [edit, setEdit] = useState<any>(null);
-  const empty = { project_id: "", title: "", description: "", priority: "medium", status: "open", ticket_type: "task", due_date: "" };
+  const empty = { project_id: "", title: "", description: "", priority: "medium", status: "open", type: "task", due_date: "" };
   const [form, setForm] = useState<any>(empty);
 
-  // Realtime: instantly reflect ticket status changes for all authorized users
-  useRealtimeTable("it_tickets", [["it-tickets"]]);
-  useRealtimeTable("it_projects", [["it-proj-min"]]);
-
-  const { data: projects = [] } = useQuery({ queryKey: ["it-proj-min"], queryFn: async () => (await (supabase as any).from("it_projects").select("id, name")).data ?? [] });
-
-  const { data: rows = [], isLoading } = useQuery({
-    queryKey: ["it-tickets", q, statusF],
+  // Projects for the dropdown (GET /it/projects — supports both array and { data: [] } responses)
+  const { data: projects = [] } = useQuery({
+    queryKey: ["it-proj-min"],
     queryFn: async () => {
-      let query = (supabase as any).from("it_tickets").select("*, it_projects(name)").order("created_at", { ascending: false });
-      if (q) query = query.or(`title.ilike.%${escapePostgrestFilterValue(q)}%,description.ilike.%${escapePostgrestFilterValue(q)}%`);
-      if (statusF !== "all") query = query.eq("status", statusF);
-      const { data, error } = await query;
-      if (error) throw error;
-      return data;
+      const res = await apiFetch("/api/v1/it/projects");
+      return Array.isArray(res) ? res : res?.data ?? [];
     },
   });
 
+  // Tickets (GET /it/tickets) — polling replaces the old Supabase realtime subscription
+  const { data: rows = [], isLoading } = useQuery({
+    queryKey: ["it-tickets", q, statusF],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (q) params.set("search", q);
+      if (statusF !== "all") params.set("status", statusF);
+      params.set("limit", "500");
+      const res = await apiFetch(`/api/v1/it/tickets?${params.toString()}`);
+      return res?.data ?? [];
+    },
+    refetchInterval: 15000,
+    refetchOnWindowFocus: true,
+  });
+
   const save = async () => {
-    const payload = {
-      ...form,
-      project_id: form.project_id || null,
+    const payload: any = {
+      title: form.title,
+      description: form.description || null,
+      type: form.type,
+      priority: form.priority,
+      status: form.status,
+      project_id: form.project_id ? Number(form.project_id) : null,
       due_date: form.due_date || null,
-      resolved_at: form.status === "resolved" || form.status === "closed" ? new Date().toISOString() : null,
-      owner_id: edit?.owner_id ?? user?.id,
-      assignee_id: edit?.assignee_id ?? user?.id,
     };
-    const { error } = edit
-      ? await (supabase as any).from("it_tickets").update(payload).eq("id", edit.id)
-      : await (supabase as any).from("it_tickets").insert(payload);
-    if (error) { toast.error(error.message); return; }
+
+    try {
+      if (edit) {
+        await apiFetch(`/api/v1/it/tickets/${edit.id}`, { method: "PUT", body: JSON.stringify(payload) });
+      } else {
+        payload.assignee_id = user?.id ?? null;
+        await apiFetch("/api/v1/it/tickets", { method: "POST", body: JSON.stringify(payload) });
+      }
+    } catch (e: any) {
+      toast.error(e.message);
+      return;
+    }
+
     toast.success(edit ? "Ticket updated" : "Ticket created");
     setOpen(false); setEdit(null); setForm(empty);
     qc.invalidateQueries({ queryKey: ["it-tickets"] });
   };
 
-  const del = async (id: string) => {
+  const del = async (id: number) => {
     if (!confirm("Delete this ticket?")) return;
-    const { error } = await (supabase as any).from("it_tickets").delete().eq("id", id);
-    if (error) { toast.error(error.message); return; }
+    try {
+      await apiFetch(`/api/v1/it/tickets/${id}`, { method: "DELETE" });
+    } catch (e: any) {
+      toast.error(e.message);
+      return;
+    }
+    toast.success("Ticket deleted");
     qc.invalidateQueries({ queryKey: ["it-tickets"] });
   };
 
   const openEdit = (row: any) => {
     setEdit(row);
-    setForm({ ...empty, ...row, due_date: row.due_date ? row.due_date.substring(0, 10) : "" });
+    setForm({
+      ...empty,
+      title: row.title ?? "",
+      description: row.description ?? "",
+      priority: row.priority ?? "medium",
+      status: row.status ?? "open",
+      type: row.type ?? "task",
+      project_id: row.project_id ? String(row.project_id) : "",
+      due_date: row.due_date ? String(row.due_date).substring(0, 10) : "",
+    });
     setOpen(true);
   };
 
@@ -120,14 +148,14 @@ function ITTicketsPage() {
               rows.map((r: any) => (
                 <TableRow key={r.id}>
                   <TableCell className="font-medium max-w-xs truncate">{r.title}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{r.it_projects?.name || "—"}</TableCell>
-                  <TableCell><Badge variant="outline" className="capitalize">{r.ticket_type}</Badge></TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{r.project_name || "—"}</TableCell>
+                  <TableCell><Badge variant="outline" className="capitalize">{r.type}</Badge></TableCell>
                   <TableCell><Badge variant="secondary" className={prioColor(r.priority)}>{r.priority}</Badge></TableCell>
                   <TableCell><Badge variant="secondary" className={statusColor(r.status)}>{r.status.replace(/_/g, " ")}</Badge></TableCell>
                   <TableCell className="text-xs">{r.due_date ? new Date(r.due_date).toLocaleDateString() : "—"}</TableCell>
                   <TableCell className="text-right">
                     <Button size="sm" variant="ghost" onClick={() => openEdit(r)}><Pencil className="h-4 w-4" /></Button>
-                    {(isManager || r.owner_id === user?.id) && <Button size="sm" variant="ghost" onClick={() => del(r.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>}
+                    {(isManager || r.created_by === user?.id) && <Button size="sm" variant="ghost" onClick={() => del(r.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>}
                   </TableCell>
                 </TableRow>
               ))}
@@ -142,9 +170,9 @@ function ITTicketsPage() {
             <Input className="md:col-span-2" placeholder="Title *" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
             <Select value={form.project_id} onValueChange={(v) => setForm({ ...form, project_id: v })}>
               <SelectTrigger><SelectValue placeholder="Project" /></SelectTrigger>
-              <SelectContent>{projects.map((p: any) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent>
+              <SelectContent>{projects.map((p: any) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}</SelectContent>
             </Select>
-            <Select value={form.ticket_type} onValueChange={(v) => setForm({ ...form, ticket_type: v })}>
+            <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>{TYPE.map((t) => <SelectItem key={t} value={t} className="capitalize">{t}</SelectItem>)}</SelectContent>
             </Select>

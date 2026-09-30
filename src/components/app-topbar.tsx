@@ -2,11 +2,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-
-import {
-  ALL_CRMS,
-  useActiveIndustry,
-} from "@/lib/active-industry";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuTrigger,
@@ -22,12 +17,20 @@ import { TenantSwitcher } from "@/components/tenant-switcher";
 import { CrmSwitcher } from "@/components/crm-switcher";
 import { NotificationsButton } from "@/components/notifications-button";
 
+const isSuperAdminRole = (r: unknown) => {
+  const v = String(r ?? "").toLowerCase().trim().replace(/[\s-]+/g, "_");
+  return v === "super_admin" || v === "superadmin";
+};
+
 export function AppTopbar() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { user, roles, logout } = useAuth();
   const [dark, setDark] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+
+  // Only the platform SuperAdmin may switch between CRMs.
+  const isSuperAdmin = roles.some(isSuperAdminRole);
 
   useEffect(() => {
     const stored = localStorage.getItem("theme");
@@ -54,21 +57,17 @@ export function AppTopbar() {
     localStorage.setItem("theme", next ? "dark" : "light");
   };
 
-  const { setActive } = useActiveIndustry();
-
-  // Runs once when the app shell mounts (i.e. on a real page refresh),
-  // not on every in-app navigation. Resets the industry filter and
-  // sends the user to the dashboard.
-  useEffect(() => {
-    setActive(ALL_CRMS);
-    navigate({ to: "/dashboard", replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // NOTE: the old "reset industry + redirect to /dashboard on mount" effect
+  // was removed. On a page refresh the user now stays on the same page and
+  // keeps the same active industry (persisted in localStorage).
 
   const handleSignOut = async () => {
     await queryClient.cancelQueries();
     queryClient.clear();
     logout(); // clears access_token, refresh_token, user from localStorage
+    // also clear per-user CRM state so the next login starts clean
+    localStorage.removeItem("active_industry");
+    localStorage.removeItem("permissions");
     toast.success("Signed out");
     navigate({ to: "/auth", replace: true });
   };
@@ -96,7 +95,7 @@ export function AppTopbar() {
       </button>
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
       <div className="ml-auto flex items-center gap-2">
-        <CrmSwitcher />
+        {isSuperAdmin && <CrmSwitcher />}
         <TenantSwitcher />
         <Button variant="ghost" size="icon" onClick={toggleTheme}>
           {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}

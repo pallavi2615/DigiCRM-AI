@@ -1,5 +1,5 @@
 import { useAuth } from "@/hooks/use-auth";
-import { useIndustryAccess, groupForRoute } from "@/lib/industry-access";
+import { useIndustryAccess, groupForRoute, isCrmRoute } from "@/lib/industry-access";
 import { useActiveIndustry } from "@/lib/active-industry";
 import { Link, useRouterState } from "@tanstack/react-router";
 
@@ -46,6 +46,7 @@ const industries = [
   { title: "Fintech DSA", url: "/fintech", icon: Landmark },
   { title: "Real Estate", url: "/realestate", icon: Home },
   { title: "IT Company", url: "/it", icon: Laptop },
+  { title: "Coaching", url: "/coaching", icon: GraduationCap },
   { title: "Product Sales", url: "/productsales", icon: Package },
   { title: "Healthcare", url: "/industry/healthcare-clinics", icon: Stethoscope },
   { title: "Education", url: "/industry/education", icon: GraduationCap },
@@ -88,7 +89,6 @@ const superAdminOnly = [
   { title: "Content (CMS)", url: "/settings-cms", icon: FileText },
 ];
 
-
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
@@ -96,8 +96,6 @@ export function AppSidebar() {
   const access = useIndustryAccess();
 
   // NOTE: useActiveIndustry() returns "activeGroup" (not "group").
-  // Destructuring it as `group: activeGroup` was silently producing
-  // `undefined`, which is why the industry filter never actually filtered.
   const { activeGroup, activeName } = useActiveIndustry();
 
   const isSuperAdmin = roles.includes("super_admin");
@@ -105,18 +103,29 @@ export function AppSidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isActive = (url: string) => pathname === url || pathname.startsWith(url + "/");
 
-  // Only filters the CRM items already in the `industries` list above
-  // (never pulls in extra sub-industries from the taxonomy). When an
-  // industry is selected via the CRM switcher, only that industry's
-  // items show; when "All industries" is active, everything the user
-  // has access to shows.
+  /**
+   * CRM visibility is decided by useIndustryAccess():
+   *  - Super Admin: everything, optionally narrowed by the CRM switcher.
+   *  - Everyone else (admin / manager / executive): ONLY the CRMs their
+   *    tenant_id is subscribed to (from /auth/my-permissions).
+   *  - Non-CRM tools (Industry Packs, DigiVerify) stay open.
+   */
   const visibleIndustries = industries.filter((i) => {
     if (!access.canUseRoute(i.url)) return false;
-    if (!activeGroup) return true;
+    if (!isSuperAdmin || !activeGroup) return true;
     return groupForRoute(i.url) === activeGroup;
   });
 
-  const industryLabel = activeGroup ? `${activeName} CRM` : "Industry CRMs";
+  const crmItems = visibleIndustries.filter((i) => isCrmRoute(i.url));
+  const singleTenantCrm = !isSuperAdmin && crmItems.length === 1 ? crmItems[0] : undefined;
+
+  const industryLabel = isSuperAdmin
+    ? activeGroup
+      ? `${activeName} CRM`
+      : "Industry CRMs"
+    : singleTenantCrm
+      ? `${singleTenantCrm.title} CRM`
+      : "Industry CRMs";
 
   const renderGroup = (label: string, items: typeof primary) => (
     <SidebarGroup>
@@ -154,7 +163,7 @@ export function AppSidebar() {
       <SidebarContent>
         {renderGroup("Workspace", primary)}
         {renderGroup("Support", support)}
-        {visibleIndustries.length > 0 && renderGroup(industryLabel, visibleIndustries)}
+        {!access.loading && visibleIndustries.length > 0 && renderGroup(industryLabel, visibleIndustries)}
         {renderGroup("Insights", insights)}
         {isAdmin && renderGroup("Administration", adminOnly)}
         {isSuperAdmin && renderGroup("Super Admin", superAdminOnly)}

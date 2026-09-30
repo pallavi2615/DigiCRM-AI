@@ -47,7 +47,8 @@ function ITLayout() {
         </div>
       </div>
       <div className="flex-1 overflow-auto">
-        <IndustryGuard group="professional-services">
+        {/* Tenant must be subscribed to "it_company" (same rule the API enforces) */}
+        <IndustryGuard route="/it">
           <Outlet />
         </IndustryGuard>
       </div>

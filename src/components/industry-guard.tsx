@@ -3,23 +3,45 @@ import { Link } from "@tanstack/react-router";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Loader2, Lock } from "lucide-react";
-import { useIndustryAccess } from "@/lib/industry-access";
+import { useIndustryAccess, groupForRoute } from "@/lib/industry-access";
 import { useActiveIndustry } from "@/lib/active-industry";
 
 /**
- * Hides an industry workspace from people who have not been given access to
- * that industry. The database policies enforce the same rule server-side.
+ * Hides an industry workspace from people whose tenant is not subscribed to
+ * that industry. The backend enforces the same rule with require_industry().
+ *
+ * Pass `route` (preferred — exact tenant-industry check, e.g. "/it") or
+ * `group` (taxonomy group slug; less precise because some groups contain
+ * more than one CRM, e.g. financial-services = fintech + insurance).
  */
-export function IndustryGuard({ group, children }: { group: string; children: ReactNode }) {
+export function IndustryGuard({
+  group,
+  route,
+  children,
+}: {
+  group?: string;
+  route?: string;
+  children: ReactNode;
+}) {
   const access = useIndustryAccess();
-  const { active, setActive, allowed } = useActiveIndustry();
-  const permitted = access.canUse(group);
+  const { active, setActive, allowed, isSuperAdmin } = useActiveIndustry();
 
-  // Opening an industry workspace makes it the active CRM, so the menu and
-  // every record list follow the person into that industry.
+  const resolvedGroup = group ?? (route ? groupForRoute(route) : undefined);
+  const permitted = route ? access.canUseRoute(route) : access.canUse(group);
+
+  // Opening an industry workspace makes it the active CRM (SuperAdmin only —
+  // everyone else is locked to their tenant's industry by useActiveIndustry).
   useEffect(() => {
-    if (permitted && active !== group && allowed.some((g) => g.slug === group)) setActive(group);
-  }, [permitted, active, group, allowed, setActive]);
+    if (
+      isSuperAdmin &&
+      permitted &&
+      resolvedGroup &&
+      active !== resolvedGroup &&
+      allowed.some((g) => g.slug === resolvedGroup)
+    ) {
+      setActive(resolvedGroup);
+    }
+  }, [isSuperAdmin, permitted, active, resolvedGroup, allowed, setActive]);
 
   if (access.loading) {
     return (
@@ -36,9 +58,9 @@ export function IndustryGuard({ group, children }: { group: string; children: Re
           <div className="mx-auto h-12 w-12 rounded-full bg-muted flex items-center justify-center">
             <Lock className="h-6 w-6 text-muted-foreground" />
           </div>
-          <h2 className="text-lg font-semibold">This industry is not part of your access</h2>
+          <h2 className="text-lg font-semibold">This CRM isn't enabled for your workspace</h2>
           <p className="text-sm text-muted-foreground">
-            Ask an administrator to add this industry to your account, then it will appear in your menu.
+            Please contact your Admin to get access to this industry.
           </p>
           <Button asChild size="sm" variant="outline">
             <Link to="/dashboard">Back to dashboard</Link>

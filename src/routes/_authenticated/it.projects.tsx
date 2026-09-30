@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
-import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Plus, Pencil, Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { escapePostgrestFilterValue } from "@/lib/utils";
+import { apiFetch } from "@/lib/api";
 
 export const Route = createFileRoute("/_authenticated/it/projects")({
   component: ITProjectsPage,
@@ -21,57 +20,154 @@ export const Route = createFileRoute("/_authenticated/it/projects")({
 
 const STAGES = ["discovery", "proposal", "negotiation", "contract", "kickoff", "in_progress", "uat", "delivered", "closed"];
 
+/* ---- API types (match app/schemas/it_project.py) ---- */
+interface ITProject {
+  id: number;
+  name: string;
+  client_name: string | null;
+  client_email: string | null;
+  stack: string | null;
+  description: string | null;
+  stage: string;
+  value: number | null;
+  currency?: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  owner_id: number | null;
+  created_at?: string;
+}
+
+interface ITProjectListResponse {
+  data: ITProject[];
+  total: number;
+  skip: number;
+  limit: number;
+}
+
+const emptyForm = {
+  name: "",
+  client_name: "",
+  client_email: "",
+  description: "",
+  stack: "",
+  stage: "discovery",
+  value: "",
+  start_date: "",
+  end_date: "",
+};
+type FormState = typeof emptyForm;
+
 function ITProjectsPage() {
   const qc = useQueryClient();
   const { user, isManager, isAdmin } = useAuth();
-  const [q, setQ] = useState("");
-  const [open, setOpen] = useState(false);
-  const [edit, setEdit] = useState<any>(null);
-  const empty = { name: "", client_name: "", client_email: "", description: "", tech_stack: "", stage: "discovery", budget: "", value: "", start_date: "", end_date: "" };
-  const [form, setForm] = useState<any>(empty);
 
-  const { data: rows = [], isLoading } = useQuery({
-    queryKey: ["it-projects", q],
-    queryFn: async () => {
-      let query = (supabase as any).from("it_projects").select("*").order("created_at", { ascending: false });
-      if (q) query = query.or(`name.ilike.%${escapePostgrestFilterValue(q)}%,client_name.ilike.%${escapePostgrestFilterValue(q)}%`);
-      const { data, error } = await query;
-      if (error) throw error;
-      return data;
+  const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const [edit, setEdit] = useState<ITProject | null>(null);
+  const [form, setForm] = useState<FormState>(emptyForm);
+
+  // avoid firing a request on every keystroke
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q.trim()), 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  /* ---------------- List (GET /it/projects) ---------------- */
+  const { data, isLoading } = useQuery({
+    queryKey: ["it-projects", debouncedQ],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: "200" });
+      if (debouncedQ) params.set("search", debouncedQ);
+      return apiFetch<ITProjectListResponse>(`/api/v1/it/projects?${params.toString()}`);
     },
   });
+  const rows = data?.data ?? [];
 
-  const save = async () => {
-    const payload = {
-      ...form,
-      budget: form.budget ? Number(form.budget) : null,
-      value: form.value ? Number(form.value) : null,
-      start_date: form.start_date || null,
-      end_date: form.end_date || null,
-      owner_id: edit?.owner_id ?? user?.id,
-      manager_id: edit?.manager_id ?? user?.id,
-    };
-    const { error } = edit
-      ? await (supabase as any).from("it_projects").update(payload).eq("id", edit.id)
-      : await (supabase as any).from("it_projects").insert(payload);
-    if (error) { toast.error(error.message); return; }
-    toast.success(edit ? "Project updated" : "Project added");
-    setOpen(false); setEdit(null); setForm(empty);
-    qc.invalidateQueries({ queryKey: ["it-projects"] });
-  };
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["it-projects"] });
 
-  const del = async (id: string) => {
+  /* ---------------- Create / Update ---------------- */
+  const save = useMutation({
+    mutationFn: () => {
+      const payload: Record<string, unknown> = {
+        name: form.name.trim(),
+        client_name: form.client_name || null,
+        client_email: form.client_email || null,
+        stack: form.stack || null,
+        description: form.description || null,
+        stage: form.stage,
+        value: form.value ? Number(form.value) : null,
+        start_date: form.start_date || null,
+        end_date: form.end_date || null,
+      };
+
+      if (edit) {
+        // PUT /it/projects/{id}
+        return apiFetch<ITProject>(`/api/v1/it/projects/${edit.id}`, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+      }
+
+      // POST /it/projects — new projects are owned by the creator
+      const ownerId = Number(user?.id);
+      if (Number.isFinite(ownerId)) payload.owner_id = ownerId;
+
+      return apiFetch<ITProject>("/api/v1/it/projects", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      toast.success(edit ? "Project updated" : "Project added");
+      setOpen(false);
+      setEdit(null);
+      setForm(emptyForm);
+      invalidate();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  /* ---------------- Delete (DELETE /it/projects/{id}) ---------------- */
+  const del = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<void>(`/api/v1/it/projects/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast.success("Project deleted");
+      invalidate();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const onDelete = (id: number) => {
     if (!confirm("Delete this project?")) return;
-    const { error } = await (supabase as any).from("it_projects").delete().eq("id", id);
-    if (error) { toast.error(error.message); return; }
-    qc.invalidateQueries({ queryKey: ["it-projects"] });
+    del.mutate(id);
   };
 
-  const openEdit = (row: any) => {
-    setEdit(row);
-    setForm({ ...empty, ...row, budget: row.budget ?? "", value: row.value ?? "", start_date: row.start_date ?? "", end_date: row.end_date ?? "" });
+  const openNew = () => {
+    setEdit(null);
+    setForm(emptyForm);
     setOpen(true);
   };
+
+  const openEdit = (row: ITProject) => {
+    setEdit(row);
+    setForm({
+      name: row.name ?? "",
+      client_name: row.client_name ?? "",
+      client_email: row.client_email ?? "",
+      description: row.description ?? "",
+      stack: row.stack ?? "",
+      stage: row.stage ?? "discovery",
+      value: row.value != null ? String(row.value) : "",
+      start_date: row.start_date ?? "",
+      end_date: row.end_date ?? "",
+    });
+    setOpen(true);
+  };
+
+  const canEdit = (r: ITProject) =>
+    isManager || (r.owner_id != null && String(r.owner_id) === String(user?.id));
 
   return (
     <div className="p-6 space-y-4">
@@ -82,7 +178,7 @@ function ITProjectsPage() {
         </div>
         <div className="flex items-center gap-2">
           <Input placeholder="Search project/client" value={q} onChange={(e) => setQ(e.target.value)} className="w-64" />
-          <Button onClick={() => { setEdit(null); setForm(empty); setOpen(true); }}><Plus className="h-4 w-4 mr-1" /> New Project</Button>
+          <Button onClick={openNew}><Plus className="h-4 w-4 mr-1" /> New Project</Button>
         </div>
       </div>
 
@@ -95,22 +191,30 @@ function ITProjectsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? <TableRow><TableCell colSpan={7} className="text-center py-8"><Loader2 className="h-5 w-5 animate-spin mx-auto" /></TableCell></TableRow> :
-              rows.length === 0 ? <TableRow><TableCell colSpan={7} className="text-center py-12 text-muted-foreground">No projects yet.</TableCell></TableRow> :
-              rows.map((r: any) => (
+            {isLoading ? (
+              <TableRow><TableCell colSpan={7} className="text-center py-8"><Loader2 className="h-5 w-5 animate-spin mx-auto" /></TableCell></TableRow>
+            ) : rows.length === 0 ? (
+              <TableRow><TableCell colSpan={7} className="text-center py-12 text-muted-foreground">No projects yet.</TableCell></TableRow>
+            ) : (
+              rows.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell className="font-medium">{r.name}</TableCell>
-                  <TableCell className="text-xs">{r.client_name}<br/><span className="text-muted-foreground">{r.client_email}</span></TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{r.tech_stack || "—"}</TableCell>
+                  <TableCell className="text-xs">{r.client_name}<br /><span className="text-muted-foreground">{r.client_email}</span></TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{r.stack || "—"}</TableCell>
                   <TableCell><Badge variant="secondary" className="capitalize">{r.stage?.replace(/_/g, " ")}</Badge></TableCell>
-                  <TableCell className="text-sm">{r.value ? `₹${(r.value/100000).toFixed(1)}L` : "—"}</TableCell>
+                  <TableCell className="text-sm">{r.value ? `₹${(r.value / 100000).toFixed(1)}L` : "—"}</TableCell>
                   <TableCell className="text-xs">{r.start_date || "—"} → {r.end_date || "—"}</TableCell>
                   <TableCell className="text-right">
-                    {(isManager || r.owner_id === user?.id || r.manager_id === user?.id) && <Button size="sm" variant="ghost" onClick={() => openEdit(r)}><Pencil className="h-4 w-4" /></Button>}
-                    {isAdmin && <Button size="sm" variant="ghost" onClick={() => del(r.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>}
+                    {canEdit(r) && <Button size="sm" variant="ghost" onClick={() => openEdit(r)}><Pencil className="h-4 w-4" /></Button>}
+                    {isAdmin && (
+                      <Button size="sm" variant="ghost" onClick={() => onDelete(r.id)} disabled={del.isPending}>
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    )}
                   </TableCell>
                 </TableRow>
-              ))}
+              ))
+            )}
           </TableBody>
         </Table>
       </Card>
@@ -122,13 +226,11 @@ function ITProjectsPage() {
             <Input className="md:col-span-2" placeholder="Project name *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <Input placeholder="Client name" value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} />
             <Input placeholder="Client email" type="email" value={form.client_email} onChange={(e) => setForm({ ...form, client_email: e.target.value })} />
-            <Input className="md:col-span-2" placeholder="Tech stack (React, Node, AWS...)" value={form.tech_stack} onChange={(e) => setForm({ ...form, tech_stack: e.target.value })} />
+            <Input className="md:col-span-2" placeholder="Tech stack (React, Node, AWS...)" value={form.stack} onChange={(e) => setForm({ ...form, stack: e.target.value })} />
             <Select value={form.stage} onValueChange={(v) => setForm({ ...form, stage: v })}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>{STAGES.map((s) => <SelectItem key={s} value={s} className="capitalize">{s.replace(/_/g, " ")}</SelectItem>)}</SelectContent>
             </Select>
-            <div />
-            <Input placeholder="Budget (₹)" type="number" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
             <Input placeholder="Value (₹)" type="number" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} />
             <Input placeholder="Start date" type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
             <Input placeholder="End date" type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} />
@@ -136,7 +238,10 @@ function ITProjectsPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={save} disabled={!form.name}>Save</Button>
+            <Button onClick={() => save.mutate()} disabled={!form.name.trim() || save.isPending}>
+              {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

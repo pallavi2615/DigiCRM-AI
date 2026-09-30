@@ -16,12 +16,11 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { Download, Layers, Loader2, Save, Search, Webhook } from "lucide-react";
+import { Download, Eye, Loader2, Save, Search, Trash2, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { downloadCsv, objectsToCsv } from "@/lib/csv";
 import { notifyPermissionDenied } from "@/components/permission-denied";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ACCESS_GROUPS, fetchUserIndustries, setUserIndustries } from "@/lib/industry-access";
 import { useAutoFollowupSettings, useUpdateAutoFollowupSettings } from "@/lib/queries/tenants";
 import { apiFetch } from "@/lib/api";
 
@@ -39,6 +38,9 @@ const ROLE_RANK: Record<Role, number> = {
 
 const ALL_ROLES: Role[] = ["super_admin", "admin", "sales_manager", "sales_executive"];
 
+/** Roles that can be granted through the API (super_admin is never grantable). */
+const ASSIGNABLE_ROLES: Role[] = ["admin", "sales_manager", "sales_executive"];
+
 /**
  * Backend role strings can differ from the frontend ones
  * (e.g. "manager" vs "sales_manager"). Normalise anything we receive.
@@ -51,7 +53,7 @@ function normalizeRole(raw: string | null | undefined): Role {
   return "sales_executive"; // "sales_executive" | "executive" | fallback
 }
 
-/** Default strings sent to PATCH /users/{id}/role. Must match app/core/constants.py. */
+/** Default strings sent to the API. Must match app/core/constants.py. */
 const API_ROLE: Record<Role, string> = {
   super_admin: "super_admin",
   admin: "admin",
@@ -79,6 +81,18 @@ interface TeamMember {
   full_name: string | null;
   role: string;
   status?: string | null;
+  created_at?: string | null;
+}
+
+interface InviteResponse {
+  user_id: number;
+  email: string;
+  full_name: string | null;
+  role: string;
+  tenant_id: number | null;
+  temp_password: string | null;
+  email_sent: boolean;
+  email_error: string | null;
 }
 
 interface AuditLog {
@@ -114,7 +128,6 @@ function SettingsPage() {
 
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
-  const [webhookUrl, setWebhookUrl] = useState("");
 
   useEffect(() => {
     if (me) {
@@ -122,18 +135,6 @@ function SettingsPage() {
       setPhone(me.phone ?? "");
     }
   }, [me]);
-
-  useEffect(() => {
-    const storedTenant = sessionStorage.getItem("signup_tenant");
-    if (storedTenant) {
-      try {
-        const tenant = JSON.parse(storedTenant);
-        setWebhookUrl(tenant.webhook_url ?? "");
-      } catch (error) {
-        console.error("Failed to parse tenant:", error);
-      }
-    }
-  }, []);
 
   const name = me?.full_name ?? me?.email?.split("@")[0] ?? "User";
   const initials = name.split(/\s+/).slice(0, 2).map((s: string) => s[0]?.toUpperCase()).join("");
@@ -179,6 +180,30 @@ function SettingsPage() {
     onError: (e: Error) => notifyPermissionDenied(e),
   });
 
+  /* ---------------- Delete user (DELETE /users/{id}) ---------------- */
+  const deleteUser = useMutation({
+    mutationFn: async (userId: number) => {
+      try {
+        // Backend returns 204 No Content; some fetch wrappers throw when
+        // trying to parse an empty body as JSON, so tolerate that case.
+        await apiFetch<unknown>(`/api/v1/users/${userId}`, { method: "DELETE" });
+      } catch (e) {
+        if (e instanceof SyntaxError) return; // empty body parse error → success
+        throw e;
+      }
+    },
+    onSuccess: () => {
+      toast.success("User deleted");
+      qc.invalidateQueries({ queryKey: ["team-members"] });
+      qc.invalidateQueries({ queryKey: ["role-audit"] });
+      setPendingDelete(null);
+    },
+    onError: (e: Error) => {
+      setPendingDelete(null);
+      notifyPermissionDenied(e);
+    },
+  });
+
   /* ---------------- Role audit (GET /audit-logs) ---------------- */
   const { data: roleAudit } = useQuery({
     queryKey: ["role-audit"],
@@ -198,9 +223,12 @@ function SettingsPage() {
   const [pendingRole, setPendingRole] = useState<
     { userId: number; name: string; from: Role; to: Role } | null
   >(null);
-  const [industryFor, setIndustryFor] = useState<{ id: string; name: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ id: number; name: string } | null>(null);
+  const [viewUserId, setViewUserId] = useState<number | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   const myRank = Math.max(0, ...displayRoles.map((r) => ROLE_RANK[r] ?? 0));
+  const isSuperAdmin = displayRoles.includes("super_admin");
   const pendingDelta = pendingRole ? diffRolePermissions(pendingRole.from, pendingRole.to) : [];
 
   const [auditSearch, setAuditSearch] = useState("");
@@ -274,49 +302,25 @@ function SettingsPage() {
       <Card className="shadow-card">
         <CardHeader><CardTitle className="text-base">Profile</CardTitle></CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex items-start justify-between gap-6 flex-wrap">
-            <div className="flex items-center gap-4">
-              <Avatar className="h-16 w-16">
-                <AvatarFallback className="text-lg gradient-primary text-primary-foreground">
-                  {initials}
-                </AvatarFallback>
-              </Avatar>
+          <div className="flex items-center gap-4">
+            <Avatar className="h-16 w-16">
+              <AvatarFallback className="text-lg gradient-primary text-primary-foreground">
+                {initials}
+              </AvatarFallback>
+            </Avatar>
 
-              <div>
-                <p className="font-medium text-lg">{name}</p>
-                <p className="text-sm text-muted-foreground">{me?.email}</p>
+            <div>
+              <p className="font-medium text-lg">{name}</p>
+              <p className="text-sm text-muted-foreground">{me?.email}</p>
 
-                <div className="flex gap-1 mt-2">
-                  {displayRoles.map((r) => (
-                    <Badge key={r} variant="secondary" className="capitalize text-xs">
-                      {r.replace("_", " ")}
-                    </Badge>
-                  ))}
-                </div>
+              <div className="flex gap-1 mt-2">
+                {displayRoles.map((r) => (
+                  <Badge key={r} variant="secondary" className="capitalize text-xs">
+                    {roleLabel(r)}
+                  </Badge>
+                ))}
               </div>
             </div>
-
-            {/* Session-storage Webhook URL */}
-            {webhookUrl && (
-              <div className="w-full md:w-105 rounded-lg border p-4">
-                <p className="text-sm font-medium">Webhook URL (Signup)</p>
-                <p className="text-xs text-muted-foreground mt-1 mb-2">
-                  Received during signup.
-                </p>
-                <div className="flex gap-2">
-                  <Input value={webhookUrl} readOnly className="text-xs" />
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      navigator.clipboard.writeText(webhookUrl);
-                      toast.success("Webhook URL copied!");
-                    }}
-                  >
-                    Copy
-                  </Button>
-                </div>
-              </div>
-            )}
           </div>
           <Separator />
           <div className="grid grid-cols-2 gap-4">
@@ -330,69 +334,136 @@ function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* ============ API WEBHOOK URL ============ */}
-      <ApiWebhookSection />
-
       {/* ============ AUTO-FOLLOWUP ============ */}
       <AutoFollowupSection />
 
       {/* ============ TEAM MEMBERS ============ */}
       {isAdmin && (
         <Card className="shadow-card">
-          <CardHeader><CardTitle className="text-base">Team Members</CardTitle></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-3 flex-wrap">
+            <CardTitle className="text-base">Team Members</CardTitle>
+            <Button size="sm" onClick={() => setInviteOpen(true)}>
+              <UserPlus className="mr-2 h-4 w-4" /> Invite user
+            </Button>
+          </CardHeader>
           <CardContent className="space-y-2">
-            {(teamMembers ?? []).map((m) => (
-              <div key={m.id} className="flex items-center gap-3 p-3 rounded border flex-wrap">
-                <Avatar className="h-9 w-9"><AvatarFallback className="text-xs bg-primary/10 text-primary">{(m.full_name || m.email || "?").slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm">{m.full_name || "—"}</p>
-                  <p className="text-xs text-muted-foreground truncate">{m.email}</p>
+            {(teamMembers ?? []).map((m) => {
+              const current = normalizeRole(m.role);
+              const isSelf = m.id === me?.id;
+              const targetIsSuperAdmin = current === "super_admin";
+              const memberName = m.full_name || m.email || "this user";
+              // always include the member's current role so it is displayed;
+              // super_admin can never be granted through the API
+              const options = ALL_ROLES.filter(
+                (r) => (ASSIGNABLE_ROLES.includes(r) && ROLE_RANK[r] <= myRank) || r === current
+              );
+
+              return (
+                <div key={m.id} className="flex items-center gap-3 p-3 rounded border flex-wrap">
+                  <Avatar className="h-9 w-9"><AvatarFallback className="text-xs bg-primary/10 text-primary">{(m.full_name || m.email || "?").slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-sm">{m.full_name || "—"}</p>
+                    <p className="text-xs text-muted-foreground truncate">{m.email}</p>
+                  </div>
+
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="View details"
+                    onClick={() => setViewUserId(m.id)}
+                  >
+                    <Eye className="h-4 w-4" />
+                  </Button>
+
+                  <Select
+                    value={current}
+                    onValueChange={(v) => setPendingRole({
+                      userId: m.id,
+                      name: memberName,
+                      from: current,
+                      to: v as Role,
+                    })}
+                    disabled={isSelf || targetIsSuperAdmin || updateRole.isPending}
+                  >
+                    <SelectTrigger className="w-44">
+                      <SelectValue>
+                        <span className="capitalize">{roleLabel(current)}</span>
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {options.map((r) => (
+                        <SelectItem
+                          key={r}
+                          value={r}
+                          className="capitalize"
+                          disabled={r === "super_admin" || ROLE_RANK[r] > myRank}
+                        >
+                          {roleLabel(r)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
+                    title={
+                      isSelf
+                        ? "You cannot delete yourself"
+                        : targetIsSuperAdmin
+                        ? "The SuperAdmin cannot be deleted"
+                        : "Delete user"
+                    }
+                    disabled={isSelf || targetIsSuperAdmin || deleteUser.isPending}
+                    onClick={() => setPendingDelete({ id: m.id, name: memberName })}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
-                <Button size="sm" variant="outline" onClick={() => setIndustryFor({ id: String(m.id), name: m.full_name || m.email || "this user" })}>
-                  <Layers className="mr-2 h-4 w-4" /> Industries
-                </Button>
-                {(() => {
-                  const current = normalizeRole(m.role);
-                  // always include the member's current role so it is displayed
-                  const options = ALL_ROLES.filter((r) => ROLE_RANK[r] <= myRank || r === current);
-                  return (
-                    <Select
-                      value={current}
-                      onValueChange={(v) => setPendingRole({
-                        userId: m.id,
-                        name: m.full_name || m.email || "this user",
-                        from: current,
-                        to: v as Role,
-                      })}
-                      disabled={m.id === me?.id || updateRole.isPending}
-                    >
-                      <SelectTrigger className="w-44">
-                        <SelectValue>
-                          <span className="capitalize">{roleLabel(current)}</span>
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {options.map((r) => (
-                          <SelectItem
-                            key={r}
-                            value={r}
-                            className="capitalize"
-                            disabled={ROLE_RANK[r] > myRank}
-                          >
-                            {roleLabel(r)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  );
-                })()}
-              </div>
-            ))}
+              );
+            })}
 
             {teamMembers?.length === 0 && <p className="text-sm text-muted-foreground text-center py-6">No team members yet.</p>}
           </CardContent>
         </Card>
       )}
+
+      {/* Invite User Dialog */}
+      <InviteUserDialog
+        open={inviteOpen}
+        onClose={() => setInviteOpen(false)}
+        isSuperAdmin={isSuperAdmin}
+        myRank={myRank}
+      />
+
+      {/* View User Dialog */}
+      <ViewUserDialog userId={viewUserId} onClose={() => setViewUserId(null)} />
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!pendingDelete} onOpenChange={(o) => !o && setPendingDelete(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete user</DialogTitle>
+            <DialogDescription>
+              {pendingDelete && (
+                <>Permanently delete <strong>{pendingDelete.name}</strong>? This cannot be undone.</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDelete(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={deleteUser.isPending}
+              onClick={() => pendingDelete && deleteUser.mutate(pendingDelete.id)}
+            >
+              {deleteUser.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Delete user
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Role Change Dialog */}
       <Dialog open={!!pendingRole} onOpenChange={(o) => !o && setPendingRole(null)}>
@@ -402,8 +473,8 @@ function SettingsPage() {
             <DialogDescription>
               {pendingRole && (
                 <>Change <strong>{pendingRole.name}</strong> from{" "}
-                <span className="capitalize">{pendingRole.from.replace("_", " ")}</span> to{" "}
-                <span className="capitalize">{pendingRole.to.replace("_", " ")}</span>? The change is
+                <span className="capitalize">{roleLabel(pendingRole.from)}</span> to{" "}
+                <span className="capitalize">{roleLabel(pendingRole.to)}</span>? The change is
                 verified again on the server and recorded in the audit log.</>
               )}
             </DialogDescription>
@@ -440,8 +511,6 @@ function SettingsPage() {
         </DialogContent>
       </Dialog>
 
-      <IndustryAccessDialog member={industryFor} onClose={() => setIndustryFor(null)} />
-
       {/* Role Audit Log */}
       {isAdmin && (
         <Card className="shadow-card">
@@ -477,7 +546,7 @@ function SettingsPage() {
                 <SelectContent>
                   <SelectItem value="all">Any role</SelectItem>
                   {ALL_ROLES.map((r) => (
-                    <SelectItem key={r} value={r} className="capitalize">{r.replace("_", " ")}</SelectItem>
+                    <SelectItem key={r} value={r} className="capitalize">{roleLabel(r)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -539,62 +608,238 @@ function SettingsPage() {
 }
 
 // ============================================================
-// API WEBHOOK SECTION (unchanged — already FastAPI)
+// INVITE USER DIALOG (POST /users/invite)
 // ============================================================
 
-function ApiWebhookSection() {
-  const { data: tenant, isLoading } = useQuery({
-    queryKey: ["tenant", "me"],
-    queryFn: () => apiFetch<any>("/api/v1/tenant/me"),
+function InviteUserDialog({
+  open,
+  onClose,
+  isSuperAdmin,
+  myRank,
+}: {
+  open: boolean;
+  onClose: () => void;
+  isSuperAdmin: boolean;
+  myRank: number;
+}) {
+  const qc = useQueryClient();
+
+  const [inviteName, setInviteName] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<Role>("sales_executive");
+  const [tenantId, setTenantId] = useState("");
+  const [sendEmail, setSendEmail] = useState(true);
+  const [result, setResult] = useState<InviteResponse | null>(null);
+
+  const inviteOptions = ASSIGNABLE_ROLES.filter((r) => ROLE_RANK[r] <= myRank);
+
+  const reset = () => {
+    setInviteName("");
+    setInviteEmail("");
+    setInviteRole("sales_executive");
+    setTenantId("");
+    setSendEmail(true);
+    setResult(null);
+  };
+
+  const handleClose = () => {
+    reset();
+    onClose();
+  };
+
+  const invite = useMutation({
+    mutationFn: () =>
+      apiFetch<InviteResponse>("/api/v1/users/invite", {
+        method: "POST",
+        body: JSON.stringify({
+          full_name: inviteName.trim(),
+          email: inviteEmail.trim(),
+          role: API_ROLE[inviteRole],
+          send_welcome_email: sendEmail,
+          // SuperAdmin must specify the tenant; tenant admins use their own
+          ...(isSuperAdmin ? { tenant_id: Number(tenantId) } : {}),
+        }),
+      }),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["team-members"] });
+      if (res.email_sent) {
+        toast.success(`Invitation emailed to ${res.email}`);
+        handleClose();
+      } else {
+        // Email not sent — show the temp password so the admin can share it.
+        toast.warning("User created, but the welcome email was not sent");
+        setResult(res);
+      }
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 
-  if (isLoading || !tenant?.webhook_url) return null;
+  const canSubmit =
+    inviteName.trim().length > 0 &&
+    /\S+@\S+\.\S+/.test(inviteEmail.trim()) &&
+    (!isSuperAdmin || Number(tenantId) > 0);
 
   return (
-    <Card className="shadow-card">
-      <CardHeader>
-        <CardTitle className="text-base flex items-center gap-2">
-          <Webhook className="h-4 w-4" /> Webhook URL (API)
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground">
-          Use this URL to receive lead events from external systems.
-        </p>
-
-        <div className="flex gap-2">
-          <Input
-            value={tenant.webhook_url}
-            readOnly
-            className="text-xs font-mono"
-          />
-          <Button
-            variant="outline"
-            onClick={() => {
-              navigator.clipboard.writeText(tenant.webhook_url);
-              toast.success("Copied!");
-            }}
-          >
-            Copy
-          </Button>
-        </div>
-
-        {tenant.api_key && (
+    <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
+      <DialogContent className="max-w-md">
+        {result ? (
           <>
-            <Separator />
-            <div>
-              <Label className="text-xs">API Key</Label>
-              <Input
-                value={tenant.api_key}
-                readOnly
-                type="password"
-                className="text-xs font-mono mt-1"
-              />
+            <DialogHeader>
+              <DialogTitle>User created</DialogTitle>
+              <DialogDescription>
+                {result.email_error
+                  ? `The welcome email failed: ${result.email_error}.`
+                  : "The welcome email was not sent."}{" "}
+                Share this temporary password with {result.full_name || result.email} manually.
+                It is shown only once.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex gap-2">
+              <Input value={result.temp_password ?? ""} readOnly className="font-mono text-sm" />
+              <Button
+                variant="outline"
+                onClick={() => {
+                  navigator.clipboard.writeText(result.temp_password ?? "");
+                  toast.success("Password copied");
+                }}
+              >
+                Copy
+              </Button>
             </div>
+            <DialogFooter>
+              <Button onClick={handleClose}>Done</Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Invite user</DialogTitle>
+              <DialogDescription>
+                The user gets a temporary password and must change it on first login.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label>Full name</Label>
+                <Input value={inviteName} onChange={(e) => setInviteName(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Email</Label>
+                <Input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Role</Label>
+                <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as Role)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {inviteOptions.map((r) => (
+                      <SelectItem key={r} value={r} className="capitalize">{roleLabel(r)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {isSuperAdmin && (
+                <div className="space-y-1.5">
+                  <Label>Tenant ID</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={tenantId}
+                    onChange={(e) => setTenantId(e.target.value)}
+                    placeholder="Required for SuperAdmin"
+                  />
+                </div>
+              )}
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox checked={sendEmail} onCheckedChange={(c) => setSendEmail(c === true)} />
+                <span className="text-sm">Send welcome email with login details</span>
+              </label>
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={handleClose}>Cancel</Button>
+              <Button onClick={() => invite.mutate()} disabled={!canSubmit || invite.isPending}>
+                {invite.isPending
+                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  : <UserPlus className="mr-2 h-4 w-4" />}
+                Send invite
+              </Button>
+            </DialogFooter>
           </>
         )}
-      </CardContent>
-    </Card>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================
+// VIEW USER DIALOG (GET /users/{user_id})
+// ============================================================
+
+function ViewUserDialog({ userId, onClose }: { userId: number | null; onClose: () => void }) {
+  const { data: user, isLoading, isError, error } = useQuery({
+    queryKey: ["users", userId],
+    enabled: userId !== null,
+    queryFn: () => apiFetch<TeamMember>(`/api/v1/users/${userId}`),
+  });
+
+  return (
+    <Dialog open={userId !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>User details</DialogTitle>
+          <DialogDescription>Profile information for this team member.</DialogDescription>
+        </DialogHeader>
+
+        {isLoading ? (
+          <div className="py-6 flex justify-center">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : isError ? (
+          <p className="text-sm text-destructive py-4">
+            {(error as Error)?.message ?? "Could not load user."}
+          </p>
+        ) : user ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <Avatar className="h-12 w-12">
+                <AvatarFallback className="bg-primary/10 text-primary">
+                  {(user.full_name || user.email || "?").slice(0, 2).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+              <div className="min-w-0">
+                <p className="font-medium">{user.full_name || "—"}</p>
+                <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+              </div>
+            </div>
+            <Separator />
+            <dl className="grid grid-cols-3 gap-y-2 text-sm">
+              <dt className="text-muted-foreground">ID</dt>
+              <dd className="col-span-2">{user.id}</dd>
+              <dt className="text-muted-foreground">Role</dt>
+              <dd className="col-span-2">
+                <Badge variant="secondary" className="capitalize text-xs">
+                  {roleLabel(normalizeRole(user.role))}
+                </Badge>
+              </dd>
+              <dt className="text-muted-foreground">Status</dt>
+              <dd className="col-span-2 capitalize">{user.status ?? "—"}</dd>
+              {user.created_at && (
+                <>
+                  <dt className="text-muted-foreground">Joined</dt>
+                  <dd className="col-span-2">{new Date(user.created_at).toLocaleDateString()}</dd>
+                </>
+              )}
+            </dl>
+          </div>
+        ) : null}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -727,72 +972,5 @@ function AutoFollowupSection() {
         </Button>
       </CardContent>
     </Card>
-  );
-}
-
-// ============================================================
-// INDUSTRY ACCESS DIALOG
-// NOTE: still relies on "@/lib/industry-access" (fetchUserIndustries /
-// setUserIndustries), which likely uses Supabase. No FastAPI route was
-// provided for it, so it is left as-is.
-// ============================================================
-
-function IndustryAccessDialog({ member, onClose }: { member: { id: string; name: string } | null; onClose: () => void }) {
-  const qc = useQueryClient();
-  const [selected, setSelected] = useState<string[] | null>(null);
-
-  const { data: current, isLoading } = useQuery({
-    queryKey: ["industry-access", member?.id],
-    enabled: !!member?.id,
-    queryFn: () => fetchUserIndustries(member!.id),
-  });
-
-  const value = selected ?? current ?? [];
-
-  const save = useMutation({
-    mutationFn: () => setUserIndustries(member!.id, value),
-    onSuccess: () => {
-      toast.success("Industry access updated");
-      qc.invalidateQueries({ queryKey: ["industry-access"] });
-      setSelected(null);
-      onClose();
-    },
-    onError: (e: Error) => notifyPermissionDenied(e),
-  });
-
-  const toggle = (slug: string) =>
-    setSelected(value.includes(slug) ? value.filter((s) => s !== slug) : [...value, slug]);
-
-  return (
-    <Dialog open={!!member} onOpenChange={(o) => { if (!o) { setSelected(null); onClose(); } }}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Industry access</DialogTitle>
-          <DialogDescription>
-            Choose which industry CRMs {member?.name} can open. Leave everything unticked to give access to all
-            industries. Administrators always see every industry.
-          </DialogDescription>
-        </DialogHeader>
-        {isLoading ? (
-          <div className="py-6 flex justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
-        ) : (
-          <div className="space-y-2 max-h-72 overflow-y-auto">
-            {ACCESS_GROUPS.map((g) => (
-              <label key={g.slug} className="flex items-center gap-3 rounded border p-2.5 cursor-pointer">
-                <Checkbox checked={value.includes(g.slug)} onCheckedChange={() => toggle(g.slug)} />
-                <span className="text-sm">{g.name}</span>
-              </label>
-            ))}
-          </div>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => { setSelected(null); onClose(); }}>Cancel</Button>
-          <Button onClick={() => save.mutate()} disabled={save.isPending || isLoading}>
-            {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Save access
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

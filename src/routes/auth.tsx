@@ -33,12 +33,6 @@ type MyPermissions = {
   industries: string[]; // subscribed industry keys, e.g. ["real_estate"]
   nav: Record<string, boolean>;
 };
-
-// ------------------------------------------------------------
-// Industry -> CRM landing route
-// ⚠️ Apni real routes ke hisaab se paths badlo.
-// Key = backend industry key (Industry.key), value = route jahan us industry ka CRM khulta hai.
-// ------------------------------------------------------------
 const INDUSTRY_HOME: Record<string, string> = {
   it_company: "/it",
   real_estate: "/realestate",

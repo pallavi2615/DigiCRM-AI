@@ -1,34 +1,67 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Briefcase, Ticket, IndianRupee, CheckCircle2 } from "lucide-react";
+import { Briefcase, Ticket, IndianRupee, CheckCircle2, Loader2 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, PieChart, Pie, Cell } from "recharts";
 
 export const Route = createFileRoute("/_authenticated/it/")({
   component: ITDashboard,
 });
 
-const STAGES = ["discovery", "proposal", "negotiation", "contract", "kickoff", "in_progress", "uat", "delivered", "closed"];
+// GET /api/v1/it/dashboard
+interface ITDashboardResponse {
+  active_projects: number;
+  delivered_projects: number;
+  open_tickets: number;
+  revenue_booked: number;
+  projects_by_stage: { stage: string; count: number }[];
+  tickets_by_priority: { priority: string; count: number }[];
+}
+
+const PRIORITIES = ["low", "medium", "high", "urgent"];
 const COLORS = ["#6366f1", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981", "#3b82f6", "#14b8a6", "#f97316", "#22c55e"];
 
+const inr = (n: number) => (n ? "₹" + (n / 100000).toFixed(1) + "L" : "₹0");
+
 function ITDashboard() {
-  const { data: projects = [] } = useQuery({ queryKey: ["it-proj-kpi"], queryFn: async () => (await (supabase as any).from("it_projects").select("id, stage, value")).data ?? [] });
-  const { data: tickets = [] } = useQuery({ queryKey: ["it-tick-kpi"], queryFn: async () => (await (supabase as any).from("it_tickets").select("id, status, priority")).data ?? [] });
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["it", "dashboard"],
+    queryFn: () => apiFetch<ITDashboardResponse>("/api/v1/it/dashboard"),
+  });
 
-  const won = projects.filter((p: any) => ["delivered", "closed"].includes(p.stage));
-  const revenue = won.reduce((s: number, p: any) => s + Number(p.value || 0), 0);
-  const open = tickets.filter((t: any) => t.status !== "resolved" && t.status !== "closed").length;
-  const stageData = STAGES.map((k) => ({ stage: k.replace(/_/g, " "), count: projects.filter((p: any) => p.stage === k).length }));
-  const prioData = ["low", "medium", "high", "urgent"].map((k) => ({ name: k, value: tickets.filter((t: any) => t.priority === k).length }));
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-24 text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin" />
+      </div>
+    );
+  }
 
-  const inr = (n: number) => n ? "₹" + (n / 100000).toFixed(1) + "L" : "₹0";
+  if (isError || !data) {
+    return (
+      <div className="p-6 text-sm text-destructive">
+        {(error as Error)?.message ?? "Could not load the IT dashboard."}
+      </div>
+    );
+  }
+
+  const stageData = data.projects_by_stage.map((s) => ({
+    stage: s.stage.replace(/_/g, " "),
+    count: s.count,
+  }));
+
+  // keep the fixed low → urgent order and colours; missing priorities count as 0
+  const prioData = PRIORITIES.map((k) => ({
+    name: k,
+    value: data.tickets_by_priority.find((p) => p.priority === k)?.count ?? 0,
+  }));
 
   const kpis = [
-    { label: "Active Projects", value: projects.filter((p: any) => !["delivered","closed"].includes(p.stage)).length, icon: Briefcase },
-    { label: "Delivered", value: won.length, icon: CheckCircle2 },
-    { label: "Open Tickets", value: open, icon: Ticket },
-    { label: "Revenue Booked", value: inr(revenue), icon: IndianRupee },
+    { label: "Active Projects", value: data.active_projects, icon: Briefcase },
+    { label: "Delivered", value: data.delivered_projects, icon: CheckCircle2 },
+    { label: "Open Tickets", value: data.open_tickets, icon: Ticket },
+    { label: "Revenue Booked", value: inr(data.revenue_booked), icon: IndianRupee },
   ];
 
   return (
@@ -55,9 +88,9 @@ function ITDashboard() {
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={stageData}>
                 <XAxis dataKey="stage" tick={{ fontSize: 10 }} interval={0} angle={-25} textAnchor="end" height={70} />
-                <YAxis tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
                 <Tooltip />
-                <Bar dataKey="count" fill="hsl(var(--primary))" radius={[6,6,0,0]} />
+                <Bar dataKey="count" fill="hsl(var(--primary))" radius={[6, 6, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
