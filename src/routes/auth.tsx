@@ -33,17 +33,18 @@ type MyPermissions = {
   industries: string[]; // subscribed industry keys, e.g. ["real_estate"]
   nav: Record<string, boolean>;
 };
-const INDUSTRY_HOME: Record<string, string> = {
-  it_company: "/it",
-  real_estate: "/realestate",
-  coaching: "/coaching",
-};
+// const INDUSTRY_HOME: Record<string, string> = {
+//   it_company: "/it",
+//   real_estate: "/realestate",
+//   coaching: "/coaching",
+// };
 const DEFAULT_HOME = "/dashboard";
 
 function resolveHome(p: MyPermissions | null): string {
   if (!p || p.is_super_admin) return DEFAULT_HOME; // super admin ke paas sab industries hain
   const active = p.industries?.[0];
-  return (active && INDUSTRY_HOME[active]) || DEFAULT_HOME;
+  // return (active && INDUSTRY_HOME[active]) || DEFAULT_HOME;
+  return DEFAULT_HOME;
 }
 
 function homeFromStorage(): string {

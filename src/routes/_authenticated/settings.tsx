@@ -95,26 +95,24 @@ interface InviteResponse {
   email_error: string | null;
 }
 
-interface AuditLog {
+/** Row from GET /role-changes (RoleChangeHistory). Roles are raw backend strings. */
+interface RoleChange {
   id: number;
   user_id: number | null;
   user_name: string | null;
-  table_name: string;
-  row_id: string | null;
-  action: string;
-  description: string | null;
-  changes: Record<string, unknown> | null;
+  user_email: string | null;
+  actor_id: number | null;
+  actor_name: string | null;
+  actor_email: string | null;
+  old_role: string | null;
+  new_role: string | null;
   created_at: string;
 }
 
-interface AuditLogsResponse {
-  data: AuditLog[];
+interface RoleChangeListResponse {
+  data: RoleChange[];
   total: number;
 }
-
-// Table name the backend uses for user/role changes in the audit log.
-// Change this if your audit rows use a different table_name.
-const ROLE_AUDIT_TABLE = "users";
 
 function SettingsPage() {
   const { roles, isAdmin } = useAuth();
@@ -204,19 +202,13 @@ function SettingsPage() {
     },
   });
 
-  /* ---------------- Role audit (GET /audit-logs) ---------------- */
-  const { data: roleAudit } = useQuery({
+  /* ---------------- Role change history (GET /role-changes) ---------------- */
+  const { data: roleAudit, isError: auditIsError, error: auditError } = useQuery({
     queryKey: ["role-audit"],
     enabled: isAdmin,
     queryFn: async () => {
-      const res = await apiFetch<AuditLogsResponse>(
-        `/api/v1/audit-logs?table=${ROLE_AUDIT_TABLE}&limit=200`
-      );
-      // keep only entries that actually changed a role
-      return (res.data ?? []).filter((a) => {
-        const c = a.changes as Record<string, unknown> | null;
-        return !!c && "role" in c;
-      });
+      const res = await apiFetch<RoleChangeListResponse>("/api/v1/role-changes?limit=500");
+      return res.data ?? [];
     },
   });
 
@@ -232,47 +224,39 @@ function SettingsPage() {
   const pendingDelta = pendingRole ? diffRolePermissions(pendingRole.from, pendingRole.to) : [];
 
   const [auditSearch, setAuditSearch] = useState("");
-  const [auditAction, setAuditAction] = useState<string>("all");
   const [auditRole, setAuditRole] = useState<string>("all");
 
   const auditRows = useMemo(() => {
     const term = auditSearch.trim().toLowerCase();
     return (roleAudit ?? [])
-      .map((a) => {
-        const roleChange = (a.changes?.["role"] ?? {}) as { from?: string | null; to?: string | null };
-        const meta: Record<string, string | null> = {
-          actor_email: a.user_name,
-          target_email: a.description,
-          old_role: roleChange.from ?? null,
-          new_role: roleChange.to ?? null,
-        };
+      .map((r) => {
+        // backend stores "manager"/"executive"; normalise to the UI role names
+        const oldRole = r.old_role ? normalizeRole(r.old_role) : null;
+        const newRole = r.new_role ? normalizeRole(r.new_role) : null;
         return {
-          ...a,
-          meta,
-          delta: diffRolePermissions(
-            (meta["old_role"] as Role) ?? null,
-            (meta["new_role"] as Role) ?? null,
-          ),
+          ...r,
+          oldRole,
+          newRole,
+          targetName: r.user_name || r.user_email || `User ${r.user_id ?? ""}`,
+          actorName: r.actor_name || r.actor_email || "system",
+          delta: diffRolePermissions(oldRole, newRole),
         };
       })
       .filter((a) => {
-        if (auditAction !== "all" && a.action !== auditAction) return false;
-        if (auditRole !== "all" && a.meta["old_role"] !== auditRole && a.meta["new_role"] !== auditRole) return false;
+        if (auditRole !== "all" && a.oldRole !== auditRole && a.newRole !== auditRole) return false;
         if (!term) return true;
-        return [a.description, a.meta["actor_email"], a.meta["target_email"], a.meta["old_role"], a.meta["new_role"]]
+        return [a.user_name, a.user_email, a.actor_name, a.actor_email, a.oldRole, a.newRole]
           .some((v) => (v ?? "").toLowerCase().includes(term));
       });
-  }, [roleAudit, auditSearch, auditAction, auditRole]);
+  }, [roleAudit, auditSearch, auditRole]);
 
   const exportAudit = () => {
     const rows = auditRows.map((a) => ({
       changed_at: new Date(a.created_at).toISOString(),
-      action: a.action,
-      actor: a.meta["actor_email"] ?? "system",
-      target: a.meta["target_email"] ?? a.row_id ?? "",
-      old_role: a.meta["old_role"] ?? "",
-      new_role: a.meta["new_role"] ?? "",
-      description: a.description ?? "",
+      actor: a.actor_email ?? a.actorName,
+      target: a.user_email ?? a.targetName,
+      old_role: a.oldRole ?? "",
+      new_role: a.newRole ?? "",
       permissions_added: a.delta
         .filter((d) => d.gained.length)
         .map((d) => `${d.module}: +${d.gained.join("/")}`)
@@ -285,8 +269,8 @@ function SettingsPage() {
     downloadCsv(
       `digicrm-role-audit-${new Date().toISOString().slice(0, 10)}.csv`,
       objectsToCsv(rows, [
-        "changed_at", "action", "actor", "target", "old_role", "new_role",
-        "description", "permissions_added", "permissions_removed",
+        "changed_at", "actor", "target", "old_role", "new_role",
+        "permissions_added", "permissions_removed",
       ]),
     );
   };
@@ -531,16 +515,6 @@ function SettingsPage() {
                   onChange={(e) => setAuditSearch(e.target.value)}
                 />
               </div>
-              <Select value={auditAction} onValueChange={setAuditAction}>
-                <SelectTrigger className="w-44"><SelectValue placeholder="Event" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All events</SelectItem>
-                  <SelectItem value="updated">Updated</SelectItem>
-                  <SelectItem value="role_granted">Role granted</SelectItem>
-                  <SelectItem value="role_changed">Role changed</SelectItem>
-                  <SelectItem value="role_revoked">Role revoked</SelectItem>
-                </SelectContent>
-              </Select>
               <Select value={auditRole} onValueChange={setAuditRole}>
                 <SelectTrigger className="w-44"><SelectValue placeholder="Role" /></SelectTrigger>
                 <SelectContent>
@@ -553,47 +527,33 @@ function SettingsPage() {
             </div>
 
             {auditRows.map((a) => {
-              const added = a.delta.filter((d) => d.gained.length);
-              const removed = a.delta.filter((d) => d.lost.length);
               return (
                 <div key={a.id} className="rounded border p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="text-sm font-medium">{a.description}</p>
+                      <p className="text-sm font-medium">
+                        {a.targetName}:{" "}
+                        <span className="capitalize">{roleLabel(a.oldRole ?? "—")}</span> →{" "}
+                        <span className="capitalize">{roleLabel(a.newRole ?? "—")}</span>
+                      </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        by {a.meta["actor_email"] ?? "system"} · {new Date(a.created_at).toLocaleString()}
+                        by {a.actorName} · {new Date(a.created_at).toLocaleString()}
                       </p>
                     </div>
-                    <Badge variant="secondary" className="text-[10px] capitalize shrink-0">
-                      {a.action.replace(/_/g, " ")}
-                    </Badge>
+                    <Badge variant="secondary" className="text-[10px] shrink-0">Role changed</Badge>
                   </div>
 
-                  {a.delta.length > 0 && (
-                    <div className="mt-2 space-y-1.5">
-                      <p className="text-xs text-muted-foreground">
-                        Impact: {added.length} module{added.length === 1 ? "" : "s"} gained access,{" "}
-                        {removed.length} module{removed.length === 1 ? "" : "s"} lost access.
-                      </p>
-                      <div className="flex flex-wrap gap-1">
-                        {added.map((d) => (
-                          <span key={`+${d.module}`} className="rounded bg-success/15 text-success px-1.5 py-0.5 text-[10px]">
-                            + {d.module}: {d.gained.join(", ")}
-                          </span>
-                        ))}
-                        {removed.map((d) => (
-                          <span key={`-${d.module}`} className="rounded bg-destructive/15 text-destructive px-1.5 py-0.5 text-[10px]">
-                            − {d.module}: {d.lost.join(", ")}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               );
             })}
 
-            {auditRows.length === 0 && (
+            {auditIsError && (
+              <p className="text-sm text-destructive text-center py-6">
+                Could not load history: {(auditError as Error)?.message}
+              </p>
+            )}
+
+            {!auditIsError && auditRows.length === 0 && (
               <p className="text-sm text-muted-foreground text-center py-6">
                 {(roleAudit ?? []).length === 0
                   ? "No role changes recorded yet."
@@ -848,6 +808,7 @@ function ViewUserDialog({ userId, onClose }: { userId: number | null; onClose: (
 // ============================================================
 
 function AutoFollowupSection() {
+  const { roles, isAdmin } = useAuth();
   const { data: settings, isLoading } = useAutoFollowupSettings();
   const updateMutation = useUpdateAutoFollowupSettings();
 
@@ -860,10 +821,16 @@ function AutoFollowupSection() {
     queryFn: () => apiFetch<any[]>("/api/v1/followups/sequences"),
   });
 
+  // Super admin -> all users (/superadmin/users); tenant admin -> own tenant (/users).
+  const isSuperAdmin = roles.some((r) => normalizeRole(r as string) === "super_admin");
+
   const { data: users } = useQuery({
-    queryKey: ["superadmin", "users"],
+    queryKey: ["assignee-users", isSuperAdmin],
+    enabled: isAdmin || isSuperAdmin,
     queryFn: async () => {
-      const res = await apiFetch<any>("/api/v1/superadmin/users");
+      const res = await apiFetch<any>(
+        isSuperAdmin ? "/api/v1/superadmin/users" : "/api/v1/users?limit=200"
+      );
       return Array.isArray(res) ? res : res.items ?? [];
     },
   });
@@ -953,7 +920,7 @@ function AutoFollowupSection() {
                 <SelectContent>
                   {(users ?? []).map((u: any) => (
                     <SelectItem key={u.id} value={String(u.id)}>
-                      {u.full_name}
+                      {u.full_name || u.email}
                     </SelectItem>
                   ))}
                 </SelectContent>
