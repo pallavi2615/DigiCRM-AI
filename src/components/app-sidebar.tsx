@@ -13,9 +13,18 @@ import {
   Landmark, Home, Laptop, Package, Stethoscope, GraduationCap, ShieldCheck, Car, Plane, Factory,
   Rocket, LifeBuoy, Radio, Crown, Layers, Inbox, TrendingUp, Activity, Wallet, HandCoins,
   Clock,
+  type LucideIcon,
 } from "lucide-react";
 
-const primary = [
+type NavItem = {
+  title: string;
+  url: string;
+  icon: LucideIcon;
+  /** If true, item is visible only to Admin + Super Admin (stays in its own section). */
+  adminOnly?: boolean;
+};
+
+const primary: NavItem[] = [
   { title: "Dashboard", url: "/dashboard", icon: LayoutDashboard },
   { title: "Leads", url: "/leads", icon: Users },
   { title: "Follow-ups", url: "/followups", icon: Clock },
@@ -27,20 +36,20 @@ const primary = [
   { title: "Meetings", url: "/meetings", icon: Video },
 ];
 
-const insights = [
+const insights: NavItem[] = [
   { title: "Reports", url: "/reports", icon: BarChart3 },
   { title: "AI Assistant", url: "/ai", icon: Sparkles },
   { title: "Proposals", url: "/proposals", icon: FileText },
-  { title: "Automation", url: "/automation", icon: Zap },
+  { title: "Automation", url: "/automation", icon: Zap, adminOnly: true },
 ];
 
-const support = [
+const support: NavItem[] = [
   { title: "Tickets", url: "/tickets", icon: LifeBuoy },
-  { title: "Inbound Leads", url: "/inbound", icon: Radio },
+  { title: "Inbound Leads", url: "/inbound", icon: Radio, adminOnly: true },
   { title: "Lead Sources", url: "/lead-sources", icon: TrendingUp },
 ];
 
-const industries = [
+const industries: NavItem[] = [
   { title: "Industry Packs", url: "/packs", icon: Layers },
   { title: "DigiVerify", url: "/digiverify", icon: ShieldCheck },
   { title: "Fintech DSA", url: "/fintech", icon: Landmark },
@@ -56,19 +65,19 @@ const industries = [
   { title: "Manufacturing", url: "/industry/manufacturing", icon: Factory },
 ];
 
-const system = [
+const system: NavItem[] = [
   { title: "My Workspace", url: "/tenant-dashboard", icon: Layers },
   { title: "Portal Desk", url: "/tenant-portal", icon: Layers },
   { title: "Billing", url: "/tenant-billing", icon: Wallet },
   { title: "DigiPortal", url: "/portal", icon: Layers },
   { title: "Partner Payouts", url: "/partner", icon: HandCoins },
   { title: "Notifications", url: "/notifications", icon: Bell },
-  { title: "Feature Matrix", url: "/feature-matrix", icon: ShieldCheck },
+  { title: "Feature Matrix", url: "/feature-matrix", icon: ShieldCheck, adminOnly: true },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
 /** Admin + Super Admin only. */
-const adminOnly = [
+const adminOnly: NavItem[] = [
   { title: "Webhook Retries", url: "/webhook-dead-letter", icon: Inbox },
   { title: "Webhook Settings", url: "/webhook-settings", icon: Settings },
   { title: "Audit Logs", url: "/audit-logs", icon: ScrollText },
@@ -76,17 +85,17 @@ const adminOnly = [
   { title: "Conversions", url: "/landing-conversions", icon: TrendingUp },
   { title: "Affiliates", url: "/affiliates", icon: Users },
   { title: "Payout History", url: "/payout-history", icon: Wallet },
-  { title: "Tenants", url: "/settings-tenants", icon: Layers },
   { title: "Pack Settings", url: "/settings-pack", icon: Settings },
   { title: "New Workspace", url: "/onboarding", icon: Layers },
 ];
 
 /** Super Admin only. */
-const superAdminOnly = [
+const superAdminOnly: NavItem[] = [
   { title: "Super Admin", url: "/admin", icon: Crown },
   { title: "Industry Pack CMS", url: "/admin-packs", icon: Layers },
   { title: "Plans & Features", url: "/settings-plans", icon: Crown },
   { title: "Content (CMS)", url: "/settings-cms", icon: FileText },
+  { title: "Tenants", url: "/settings-tenants", icon: Layers },
 ];
 
 export function AppSidebar() {
@@ -103,13 +112,6 @@ export function AppSidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isActive = (url: string) => pathname === url || pathname.startsWith(url + "/");
 
-  /**
-   * CRM visibility is decided by useIndustryAccess():
-   *  - Super Admin: everything, optionally narrowed by the CRM switcher.
-   *  - Everyone else (admin / manager / executive): ONLY the CRMs their
-   *    tenant_id is subscribed to (from /auth/my-permissions).
-   *  - Non-CRM tools (Industry Packs, DigiVerify) stay open.
-   */
   const visibleIndustries = industries.filter((i) => {
     if (!access.canUseRoute(i.url)) return false;
     if (!isSuperAdmin || !activeGroup) return true;
@@ -127,25 +129,31 @@ export function AppSidebar() {
       ? `${singleTenantCrm.title} CRM`
       : "Industry CRMs";
 
-  const renderGroup = (label: string, items: typeof primary) => (
-    <SidebarGroup>
-      {!collapsed && <SidebarGroupLabel>{label}</SidebarGroupLabel>}
-      <SidebarGroupContent>
-        <SidebarMenu>
-          {items.map((item) => (
-            <SidebarMenuItem key={item.url}>
-              <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
-                <Link to={item.url}>
-                  <item.icon className="h-4 w-4" />
-                  <span>{item.title}</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
-      </SidebarGroupContent>
-    </SidebarGroup>
-  );
+  const renderGroup = (label: string, items: NavItem[]) => {
+    // Hide adminOnly items for non-admin users
+    const visibleItems = items.filter((item) => !item.adminOnly || isAdmin);
+    if (visibleItems.length === 0) return null;
+
+    return (
+      <SidebarGroup>
+        {!collapsed && <SidebarGroupLabel>{label}</SidebarGroupLabel>}
+        <SidebarGroupContent>
+          <SidebarMenu>
+            {visibleItems.map((item) => (
+              <SidebarMenuItem key={item.url}>
+                <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
+                  <Link to={item.url}>
+                    <item.icon className="h-4 w-4" />
+                    <span>{item.title}</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    );
+  };
 
   return (
     <Sidebar collapsible="icon">

@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
+  Building2,
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -27,7 +28,7 @@ export const Route = createFileRoute("/_authenticated/automation")({
   component: AutomationPage,
 });
 
-// Matches the ACTUAL /api/v1/automation/rules response
+// GET /api/v1/automation/rules
 export interface AutomationRule {
   id: number;
   tenant_id: number;
@@ -36,12 +37,19 @@ export interface AutomationRule {
   description: string | null;
   trigger_text: string | null;
   action_text: string | null;
-  rule_type: string; // "event" | "time" (observed values)
+  rule_type: string; // "event" | "time"
   is_active: boolean;
   updated_at: string;
 }
 
-// Matches the ACTUAL /api/v1/automation/logs response
+// PATCH /api/v1/automation/rules/{id}/toggle  (partial response)
+export interface ToggleRuleResponse {
+  id: number;
+  name: string;
+  is_active: boolean;
+}
+
+// GET /api/v1/automation/logs
 export interface AutomationLog {
   id: number;
   tenant_id: number;
@@ -49,7 +57,7 @@ export interface AutomationLog {
   entity_type: string;
   entity_id: number;
   action_taken: string;
-  result: string; // "success" observed — treat anything else as failure
+  result: string; // "success" observed — anything else is treated as failure
   error_message: string | null;
   executed_at: string;
 }
@@ -72,6 +80,17 @@ function timeAgo(iso?: string) {
   return `${days}d ago`;
 }
 
+function isForbidden(err: unknown) {
+  const msg = err instanceof Error ? err.message.toLowerCase() : "";
+  return (
+    msg.includes("403") ||
+    msg.includes("forbidden") ||
+    msg.includes("permission") ||
+    msg.includes("not authorized") ||
+    msg.includes("not allowed")
+  );
+}
+
 function AutomationPage() {
   const queryClient = useQueryClient();
 
@@ -89,6 +108,7 @@ function AutomationPage() {
     data: logs,
     isLoading: logsLoading,
     isError: logsError,
+    error: logsErrorObj,
   } = useQuery({
     queryKey: ["automation-logs"],
     queryFn: () => apiFetch<AutomationLog[]>("/api/v1/automation/logs"),
@@ -96,22 +116,40 @@ function AutomationPage() {
 
   const toggleMutation = useMutation({
     mutationFn: (ruleId: number) =>
-      apiFetch<AutomationRule>(`/api/v1/automation/rules/${ruleId}/toggle`, {
-        method: "PATCH",
-      }),
+      apiFetch<ToggleRuleResponse>(
+        `/api/v1/automation/rules/${ruleId}/toggle`,
+        { method: "PATCH" }
+      ),
     onMutate: async (ruleId) => {
       await queryClient.cancelQueries({ queryKey: ["automation-rules"] });
-      const previous = queryClient.getQueryData<AutomationRule[]>(["automation-rules"]);
+      const previous = queryClient.getQueryData<AutomationRule[]>([
+        "automation-rules",
+      ]);
+      // Optimistic flip
       queryClient.setQueryData<AutomationRule[]>(["automation-rules"], (old) =>
-        old?.map((r) => (r.id === ruleId ? { ...r, is_active: !r.is_active } : r))
+        old?.map((r) =>
+          r.id === ruleId ? { ...r, is_active: !r.is_active } : r
+        )
       );
       return { previous };
     },
+    onSuccess: (data) => {
+      toast.success(
+        `${data.name || "Rule"} ${data.is_active ? "activated" : "paused"}`
+      );
+    },
     onError: (err, _ruleId, context) => {
+      // Roll back
       if (context?.previous) {
         queryClient.setQueryData(["automation-rules"], context.previous);
       }
-      toast.error(err instanceof Error ? err.message : "Failed to toggle rule");
+      toast.error(
+        isForbidden(err)
+          ? "Only admins can turn automation rules on or off."
+          : err instanceof Error
+          ? err.message
+          : "Failed to toggle rule"
+      );
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["automation-rules"] });
@@ -119,6 +157,10 @@ function AutomationPage() {
   });
 
   const ruleNameById = new Map((rules ?? []).map((r) => [r.id, r.name]));
+
+  // Super admin gets rules from multiple tenants — show tenant badge only then
+  const multiTenant = new Set((rules ?? []).map((r) => r.tenant_id)).size > 1;
+  const activeCount = (rules ?? []).filter((r) => r.is_active).length;
 
   return (
     <div className="space-y-5">
@@ -128,6 +170,11 @@ function AutomationPage() {
         </h1>
         <p className="text-muted-foreground text-sm mt-1">
           Rules that run repetitive sales tasks automatically.
+          {rules && rules.length > 0 && (
+            <span className="ml-1">
+              · {activeCount} of {rules.length} active
+            </span>
+          )}
         </p>
       </div>
 
@@ -157,7 +204,9 @@ function AutomationPage() {
             <Card className="border-destructive/40">
               <CardContent className="p-4 flex items-center gap-2 text-sm text-destructive">
                 <AlertCircle className="h-4 w-4" />
-                {rulesErrorObj instanceof Error
+                {isForbidden(rulesErrorObj)
+                  ? "You don't have permission to view automation rules."
+                  : rulesErrorObj instanceof Error
                   ? rulesErrorObj.message
                   : "Failed to load automation rules"}
               </CardContent>
@@ -177,53 +226,74 @@ function AutomationPage() {
                 </Card>
               )}
 
-              {rules?.map((r) => (
-                <Card key={r.id} className="shadow-card">
-                  <CardContent className="p-4 flex items-center gap-4">
-                    <div
-                      className={`h-10 w-10 rounded-lg flex items-center justify-center shrink-0 ${
-                        r.is_active
-                          ? "bg-primary/10 text-primary"
-                          : "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      <Zap className="h-5 w-5" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h4 className="font-semibold">{r.name || "Untitled rule"}</h4>
-                        <Badge
-                          variant={r.is_active ? "default" : "secondary"}
-                          className="text-[10px]"
-                        >
-                          {r.is_active ? "Active" : "Paused"}
-                        </Badge>
-                        <Badge variant="outline" className="text-[10px] gap-1">
-                          {r.rule_type === "time" && <Clock className="h-2.5 w-2.5" />}
-                          {ruleTypeLabel(r.rule_type)}
-                        </Badge>
+              {rules?.map((r) => {
+                const savingThis =
+                  toggleMutation.isPending && toggleMutation.variables === r.id;
+
+                return (
+                  <Card key={r.id} className="shadow-card">
+                    <CardContent className="p-4 flex items-center gap-4">
+                      <div
+                        className={`h-10 w-10 rounded-lg flex items-center justify-center shrink-0 ${
+                          r.is_active
+                            ? "bg-primary/10 text-primary"
+                            : "bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        <Zap className="h-5 w-5" />
                       </div>
-                      {r.description && (
-                        <p className="text-xs text-muted-foreground mt-0.5">{r.description}</p>
-                      )}
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1 flex-wrap">
-                        <span className="px-2 py-0.5 rounded bg-muted">
-                          {r.trigger_text || "No trigger set"}
-                        </span>
-                        <ArrowRight className="h-3 w-3" />
-                        <span className="px-2 py-0.5 rounded bg-muted">
-                          {r.action_text || "No action set"}
-                        </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="font-semibold">
+                            {r.name || "Untitled rule"}
+                          </h4>
+                          <Badge
+                            variant={r.is_active ? "default" : "secondary"}
+                            className="text-[10px]"
+                          >
+                            {r.is_active ? "Active" : "Paused"}
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px] gap-1">
+                            {r.rule_type === "time" && (
+                              <Clock className="h-2.5 w-2.5" />
+                            )}
+                            {ruleTypeLabel(r.rule_type)}
+                          </Badge>
+                          {multiTenant && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] gap-1"
+                            >
+                              <Building2 className="h-2.5 w-2.5" />
+                              Tenant #{r.tenant_id}
+                            </Badge>
+                          )}
+                        </div>
+                        {r.description && (
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {r.description}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1 flex-wrap">
+                          <span className="px-2 py-0.5 rounded bg-muted">
+                            {r.trigger_text || "No trigger set"}
+                          </span>
+                          <ArrowRight className="h-3 w-3" />
+                          <span className="px-2 py-0.5 rounded bg-muted">
+                            {r.action_text || "No action set"}
+                          </span>
+                        </div>
                       </div>
-                    </div>
-                    <Switch
-                      checked={r.is_active}
-                      disabled={toggleMutation.isPending}
-                      onCheckedChange={() => toggleMutation.mutate(r.id)}
-                    />
-                  </CardContent>
-                </Card>
-              ))}
+                      <Switch
+                        checked={r.is_active}
+                        disabled={savingThis}
+                        aria-label={`Toggle ${r.name}`}
+                        onCheckedChange={() => toggleMutation.mutate(r.id)}
+                      />
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </TabsContent>
@@ -242,7 +312,9 @@ function AutomationPage() {
             <Card className="border-destructive/40">
               <CardContent className="p-4 flex items-center gap-2 text-sm text-destructive">
                 <AlertCircle className="h-4 w-4" />
-                Failed to load activity log
+                {isForbidden(logsErrorObj)
+                  ? "You don't have permission to view the activity log."
+                  : "Failed to load activity log"}
               </CardContent>
             </Card>
           )}
@@ -278,14 +350,16 @@ function AutomationPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-medium">
-                            {ruleNameById.get(log.rule_id) ?? `Rule #${log.rule_id}`}
+                            {ruleNameById.get(log.rule_id) ??
+                              `Rule #${log.rule_id}`}
                           </span>
                           <span className="text-xs text-muted-foreground">
                             {log.action_taken.replace(/_/g, " ")}
                           </span>
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          {log.entity_type} #{log.entity_id} · {timeAgo(log.executed_at)}
+                          {log.entity_type} #{log.entity_id} ·{" "}
+                          {timeAgo(log.executed_at)}
                           {log.error_message ? ` · ${log.error_message}` : ""}
                         </p>
                       </div>
@@ -307,7 +381,8 @@ function AutomationPage() {
       <Card className="shadow-card border-dashed">
         <CardContent className="p-6 text-center">
           <p className="text-sm text-muted-foreground">
-            Custom workflow builder with conditional branches, webhooks, and multi-step actions coming next.
+            Custom workflow builder with conditional branches, webhooks, and
+            multi-step actions coming next.
           </p>
         </CardContent>
       </Card>
