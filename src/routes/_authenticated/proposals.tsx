@@ -1,10 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-// import { useServerFn } from "@tanstack/react-start";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 // NOTE: adjust this import path if your api.ts helper lives somewhere else.
 import { apiFetch } from "@/lib/api";
-// import { aiChat } from "@/lib/ai.functions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import {
   FileText, Sparkles, Loader2, Download, Plus, Pencil, Eye, Trash2, Search,
-  Clock, ShieldCheck, LayoutTemplate, Save, Send, CheckCircle2, XCircle, ArrowRightLeft,
+  Clock, ShieldCheck, LayoutTemplate, Send, CheckCircle2, XCircle, ArrowRightLeft,
 } from "lucide-react";
 import { notifyPermissionDenied } from "@/components/permission-denied";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -129,6 +127,24 @@ interface Template {
   updated_at: string;
 }
 
+// POST /api/v1/proposal-templates/{id}/render
+interface RenderedTemplate {
+  template_id: number;
+  title: string;
+  description: string | null;
+  amount: number;
+  currency: string | null;
+  terms: string | null;
+  document_content: string | null;
+}
+
+// POST /api/v1/proposal-templates/{id}/use
+interface UseTemplateResponse {
+  success: boolean;
+  proposal_id: number;
+  message: string;
+}
+
 const emptyForm = {
   title: "",
   description: "",
@@ -167,10 +183,13 @@ function ProposalsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [viewing, setViewing] = useState<Proposal | null>(null);
   const [form, setForm] = useState<Form>(emptyForm);
-  const [templateOpen, setTemplateOpen] = useState(false);
-  const [templateForm, setTemplateForm] = useState({ title: "", category: "", is_shared: true });
   const [converting, setConverting] = useState<Proposal | null>(null);
   const [convertForm, setConvertForm] = useState({ stage: "proposal_sent" as LeadStatus, value: "" });
+
+  // Template preview dialog state
+  const [previewing, setPreviewing] = useState<Template | null>(null);
+  const [clientName, setClientName] = useState("");
+  const [rendered, setRendered] = useState<RenderedTemplate | null>(null);
 
   // ---- Templates ---------------------------------------------------------
   const { data: templates } = useQuery({
@@ -178,7 +197,24 @@ function ProposalsPage() {
     queryFn: () => apiFetch<Template[]>("/api/v1/proposal-templates"),
   });
 
-  const applyTemplate = (t: Template) => {
+  // Fill the create form from a rendered template (server-side render).
+  const fillFormFromRendered = (r: RenderedTemplate) => {
+    setEditing(null);
+    setForm({
+      ...emptyForm,
+      title: r.title,
+      description: r.description ?? "",
+      amount: r.amount ? String(Number(r.amount)) : "",
+      currency: r.currency || "INR",
+      terms: r.document_content || r.terms || "",
+      template_id: String(r.template_id),
+    });
+    setFormOpen(true);
+    toast.success(`Template “${r.title}” loaded`);
+  };
+
+  // Fallback: fill the form from the raw template (no server render).
+  const applyTemplateLocal = (t: Template) => {
     setEditing(null);
     setForm({
       ...emptyForm,
@@ -193,32 +229,53 @@ function ProposalsPage() {
     toast.success(`Template “${t.title}” loaded`);
   };
 
-  const saveTemplate = useMutation({
-    mutationFn: async () => {
-      if (!templateForm.title.trim()) throw new Error("Template name is required");
-      await apiFetch("/api/v1/proposal-templates", {
-        method: "POST",
-        body: JSON.stringify({
-          title: templateForm.title.trim(),
-          description: form.description || null,
-          category: templateForm.category || null,
-          owner_label: null,
-          amount: form.amount ? Number(form.amount) : 0,
-          currency: form.currency || "INR",
-          terms: form.terms || null,
-          content: {},
-          shared_with_team: templateForm.is_shared,
-        }),
-      });
+  const renderRequest = (id: number, client?: string) =>
+    apiFetch<RenderedTemplate>(`/api/v1/proposal-templates/${id}/render`, {
+      method: "POST",
+      body: JSON.stringify({ client_name: client?.trim() || undefined }),
+    });
+
+  // "Use" on a template card -> render on server, then load into the form.
+  const loadTemplate = useMutation({
+    mutationFn: (t: Template) => renderRequest(t.id),
+    onSuccess: (r) => fillFormFromRendered(r),
+    onError: (_e, t) => {
+      toast.message("Couldn't render the template, loading the basic version instead.");
+      applyTemplateLocal(t);
     },
+  });
+
+  // Preview dialog -> render with optional client name.
+  const previewTemplate = useMutation({
+    mutationFn: ({ id, client }: { id: number; client?: string }) => renderRequest(id, client),
+    onSuccess: (r) => setRendered(r),
+    onError: (e: Error) => notifyPermissionDenied(e),
+  });
+
+  // Create a draft proposal directly on the server from the template.
+  const createFromTemplate = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<UseTemplateResponse>(`/api/v1/proposal-templates/${id}/use`, { method: "POST" }),
     onSuccess: () => {
-      toast.success("Saved as a reusable template");
-      setTemplateOpen(false);
-      setTemplateForm({ title: "", category: "", is_shared: true });
-      qc.invalidateQueries({ queryKey: ["proposal-templates"] });
+      toast.success("Draft proposal created from template");
+      closePreview();
+      qc.invalidateQueries({ queryKey: ["proposals"] });
     },
     onError: (e: Error) => notifyPermissionDenied(e),
   });
+
+  const openPreview = (t: Template) => {
+    setPreviewing(t);
+    setClientName("");
+    setRendered(null);
+    previewTemplate.mutate({ id: t.id });
+  };
+
+  const closePreview = () => {
+    setPreviewing(null);
+    setClientName("");
+    setRendered(null);
+  };
 
   const deleteTemplate = useMutation({
     mutationFn: async (id: number) => {
@@ -383,41 +440,10 @@ function ProposalsPage() {
     onError: (e: Error) => notifyPermissionDenied(e),
   });
 
-  const generate = useMutation({
-    mutationFn: async () => {
-      if (!form.title.trim()) throw new Error("Add a title first so the AI knows what to draft");
-      const selectedLead = (leads ?? []).find((l) => String(l.id) === form.lead_id);
-      const prompt = `Draft a professional business proposal.
-
-Title: ${form.title}
-Client: ${selectedLead ? leadLabel(selectedLead) : "the client"}
-Summary: ${form.description || "Not provided"}
-Deal value: ${form.amount ? `${form.currency} ${form.amount}` : "TBD"}
-Expected close: ${form.close_date || "TBD"}
-
-Include: executive summary, scope of work, deliverables, timeline, pricing table and terms. Use clear markdown headings.`;
-      const accessToken = localStorage.getItem("access_token");
-
-      if (!accessToken) {
-        throw new Error("Please login again");
-      }
-
-      const res = await apiFetch<{ content: string }>("/api/v1/ai/chat", {
-        method: "POST",
-        body: JSON.stringify({
-          messages: [
-            {
-              role: "user",
-              content: prompt,
-            },
-          ],
-        }),
-      });
-
-      setForm((f) => ({ ...f, terms: res.content }));
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
+  // AI generation is currently disabled — show a message instead.
+  const handleGenerateWithAI = () => {
+    toast.info("Currently not available");
+  };
 
   // ---- Approval -------------------------------------------------------------
   const requestApproval = useMutation({
@@ -548,9 +574,7 @@ Include: executive summary, scope of work, deliverables, timeline, pricing table
         </CardHeader>
         <CardContent className="space-y-2">
           {(templates ?? []).length === 0 && (
-            <p className="text-sm text-muted-foreground">
-              No templates yet — open a proposal and choose “Save as template” to reuse it later.
-            </p>
+            <p className="text-sm text-muted-foreground">No templates yet.</p>
           )}
           <div className="grid gap-2 sm:grid-cols-2">
             {(templates ?? []).map((t) => (
@@ -566,8 +590,28 @@ Include: executive summary, scope of work, deliverables, timeline, pricing table
                   </p>
                 </div>
                 <div className="flex gap-1 shrink-0">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-8 w-8"
+                    title="Preview template"
+                    onClick={() => openPreview(t)}
+                  >
+                    <Eye className="h-4 w-4" />
+                  </Button>
                   {perms.canCreate("proposals") && (
-                    <Button size="sm" variant="outline" className="h-8" onClick={() => applyTemplate(t)}>Use</Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      onClick={() => loadTemplate.mutate(t)}
+                      disabled={loadTemplate.isPending && loadTemplate.variables?.id === t.id}
+                    >
+                      {loadTemplate.isPending && loadTemplate.variables?.id === t.id && (
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      )}
+                      Use
+                    </Button>
                   )}
                   {(t.created_by != null && String(t.created_by) === user?.id || isAdmin) && (
                     <Button size="icon" variant="ghost" className="h-8 w-8" title="Delete template" onClick={() => deleteTemplate.mutate(t.id)}>
@@ -802,10 +846,10 @@ Include: executive summary, scope of work, deliverables, timeline, pricing table
             <div className="flex items-center justify-between gap-2">
               <div>
                 <p className="text-sm font-medium">Proposal document</p>
-                <p className="text-xs text-muted-foreground">Draft the full document with AI, then edit it inline.</p>
+                <p className="text-xs text-muted-foreground">Write the full document below.</p>
               </div>
-              <Button size="sm" variant="outline" onClick={() => generate.mutate()} disabled={generate.isPending}>
-                {generate.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+              <Button size="sm" variant="outline" onClick={handleGenerateWithAI}>
+                <Sparkles className="mr-2 h-4 w-4" />
                 Generate with AI
               </Button>
             </div>
@@ -813,48 +857,107 @@ Include: executive summary, scope of work, deliverables, timeline, pricing table
               rows={8}
               value={form.terms}
               onChange={(e) => setForm({ ...form, terms: e.target.value })}
-              placeholder="Proposal content — generate with AI or write your own."
+              placeholder="Proposal content — write your own."
             />
           </div>
-          <DialogFooter className="gap-2 sm:justify-between">
-            <Button variant="ghost" onClick={() => setTemplateOpen(true)}>
-              <Save className="mr-2 h-4 w-4" /> Save as template
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button>
+            <Button onClick={() => save.mutate()} disabled={save.isPending}>
+              {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {editing ? "Save changes" : "Create proposal"}
             </Button>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button>
-              <Button onClick={() => save.mutate()} disabled={save.isPending}>
-                {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {editing ? "Save changes" : "Create proposal"}
-              </Button>
-            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Save as template */}
-      <Dialog open={templateOpen} onOpenChange={setTemplateOpen}>
-        <DialogContent className="max-w-md">
+      {/* Template preview */}
+      <Dialog open={!!previewing} onOpenChange={(o) => !o && closePreview()}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Save as template</DialogTitle>
-            <DialogDescription>Reuse this proposal's description, amount and terms as a starting point.</DialogDescription>
+            <DialogTitle>{previewing?.title}</DialogTitle>
+            <DialogDescription>
+              Preview the rendered document. Add a client name to personalise it.
+            </DialogDescription>
           </DialogHeader>
+
           <div className="space-y-3">
-            <div className="space-y-1.5"><Label>Template name *</Label>
-              <Input value={templateForm.title} onChange={(e) => setTemplateForm({ ...templateForm, title: e.target.value })} placeholder="Healthcare clinic onboarding" />
+            <div className="flex gap-2 items-end">
+              <div className="flex-1 space-y-1.5">
+                <Label>Client name (optional)</Label>
+                <Input
+                  value={clientName}
+                  onChange={(e) => setClientName(e.target.value)}
+                  placeholder="Acme Corp"
+                />
+              </div>
+              <Button
+                variant="outline"
+                disabled={!previewing || previewTemplate.isPending}
+                onClick={() =>
+                  previewing && previewTemplate.mutate({ id: previewing.id, client: clientName })
+                }
+              >
+                {previewTemplate.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Render
+              </Button>
             </div>
-            <div className="space-y-1.5"><Label>Category</Label>
-              <Input value={templateForm.category} onChange={(e) => setTemplateForm({ ...templateForm, category: e.target.value })} placeholder="Healthcare" />
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={templateForm.is_shared} onChange={(e) => setTemplateForm({ ...templateForm, is_shared: e.target.checked })} />
-              Share with the whole team
-            </label>
+
+            {previewTemplate.isPending && !rendered && <Skeleton className="h-48 w-full" />}
+
+            {rendered && (
+              <div className="space-y-3 text-sm">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Amount</p>
+                    <p className="font-medium">
+                      {rendered.currency ?? ""} {Number(rendered.amount ?? 0).toLocaleString()}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Category</p>
+                    <p className="font-medium">{previewing?.category || "—"}</p>
+                  </div>
+                </div>
+                {rendered.description && (
+                  <div>
+                    <p className="text-xs text-muted-foreground">Description</p>
+                    <p>{rendered.description}</p>
+                  </div>
+                )}
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Document</p>
+                  <div className="rounded border p-3 whitespace-pre-wrap max-h-80 overflow-y-auto text-xs">
+                    {rendered.document_content || rendered.terms || "This template has no document content."}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setTemplateOpen(false)}>Cancel</Button>
-            <Button onClick={() => saveTemplate.mutate()} disabled={saveTemplate.isPending}>
-              {saveTemplate.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Save template
-            </Button>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={closePreview}>Close</Button>
+            {perms.canCreate("proposals") && previewing && (
+              <>
+                <Button
+                  variant="outline"
+                  disabled={createFromTemplate.isPending}
+                  onClick={() => createFromTemplate.mutate(previewing.id)}
+                >
+                  {createFromTemplate.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Create draft now
+                </Button>
+                <Button
+                  disabled={!rendered}
+                  onClick={() => {
+                    if (!rendered) return;
+                    fillFormFromRendered(rendered);
+                    closePreview();
+                  }}
+                >
+                  Use in form
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
