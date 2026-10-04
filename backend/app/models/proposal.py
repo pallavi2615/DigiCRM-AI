@@ -2,7 +2,9 @@ from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Date,
     Numeric, ForeignKey
 )
+from sqlalchemy.dialects.postgresql import UUID   
 from sqlalchemy.sql import func
+import uuid                                       
 
 from app.db.database import Base
 
@@ -11,7 +13,21 @@ class Proposal(Base):
     __tablename__ = "proposals"
 
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id = Column(
+        Integer,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    # ⭐ NEW — external unique identifier
+    uuid = Column(
+        UUID(as_uuid=True),
+        unique=True,
+        nullable=False,
+        default=uuid.uuid4,
+        index=True,
+    )
+
     lead_id = Column(Integer, ForeignKey("leads.id", ondelete="SET NULL"), index=True)
 
     title = Column(String(255), nullable=False)
@@ -39,7 +55,11 @@ class Proposal(Base):
     declined_at = Column(DateTime)
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     created_at = Column(DateTime, server_default=func.now(), index=True)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    updated_at = Column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
     contact_id = Column(Integer, ForeignKey("leads.id", ondelete="SET NULL"))
     contact_name = Column(String(200))

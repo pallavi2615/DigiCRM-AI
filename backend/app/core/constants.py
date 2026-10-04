@@ -13,6 +13,11 @@ EXECUTIVE_ROLE = "executive"
 AGENT_ROLE = "agent"
 CLIENT_ROLE = "client"
 
+# Sales roles (used for the Feature Matrix)
+SALES_MANAGER_ROLE = "sales_manager"
+SALES_EXECUTIVE_ROLE = "sales_executive"
+
+
 # All valid roles
 ALL_ROLES = [
     SUPER_ADMIN_ROLE,

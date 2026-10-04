@@ -1,6 +1,6 @@
 import os
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_
 from typing import Optional, List
@@ -8,6 +8,9 @@ from datetime import datetime, date
 
 from app.db.database import get_db
 from app.core.deps import get_current_user
+from app.core.permissions import require_feature_permission
+from app.core.constants import SUPER_ADMIN_ROLE as SA_CONST        # ⭐
+from app.services.audit_service import AuditService                # ⭐
 from app.models.user import User
 from app.models.task import Task, TaskAttachment
 from app.schemas.task import (
@@ -37,7 +40,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 def _apply_tenant_filter(query, user: User):
-    if user.role != SUPER_ADMIN_ROLE:
+    if user.role != SA_CONST:
         query = query.filter(Task.tenant_id == user.tenant_id)
     return query
 
@@ -75,7 +78,7 @@ def list_tasks(
     search: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("tasks", "view")),
     db: Session = Depends(get_db),
 ):
     query = _apply_tenant_filter(db.query(Task), user)
@@ -110,7 +113,10 @@ def list_tasks(
 # ============================================================
 
 @router.get("/stats")
-def task_stats(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def task_stats(
+    user: User = Depends(require_feature_permission("tasks", "view")),
+    db: Session = Depends(get_db),
+):
     query = _apply_tenant_filter(db.query(Task), user)
     today = date.today()
 
@@ -135,7 +141,10 @@ def task_stats(user: User = Depends(get_current_user), db: Session = Depends(get
 # ============================================================
 
 @router.get("/today", response_model=List[TaskResponse])
-def tasks_today(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def tasks_today(
+    user: User = Depends(require_feature_permission("tasks", "view")),
+    db: Session = Depends(get_db),
+):
     query = _apply_tenant_filter(db.query(Task), user)
     tasks = query.filter(Task.due_date == date.today()).order_by(Task.priority).all()
     return [_enrich_task(db, t) for t in tasks]
@@ -146,7 +155,11 @@ def tasks_today(user: User = Depends(get_current_user), db: Session = Depends(ge
 # ============================================================
 
 @router.get("/{task_id}", response_model=TaskResponse)
-def get_task(task_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_task(
+    task_id: int,
+    user: User = Depends(require_feature_permission("tasks", "view")),
+    db: Session = Depends(get_db),
+):
     task = _get_task_or_404(db, task_id, user)
     return _enrich_task(db, task)
 
@@ -156,12 +169,26 @@ def get_task(task_id: int, user: User = Depends(get_current_user), db: Session =
 # ============================================================
 
 @router.post("", response_model=TaskResponse, status_code=201)
-def create_task(payload: TaskCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not user.tenant_id:
-        raise HTTPException(400, "User has no tenant")
+def create_task(
+    payload: TaskCreate,
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("tasks", "create")),
+    db: Session = Depends(get_db),
+):
+    if user.role == SA_CONST:
+        tenant_id = payload.tenant_id
+        if not tenant_id:
+            raise HTTPException(
+                400,
+                "SuperAdmin must specify tenant_id when creating a task"
+            )
+    else:
+        if not user.tenant_id:
+            raise HTTPException(400, "User has no tenant")
+        tenant_id = user.tenant_id
 
     task = Task(
-        tenant_id=user.tenant_id,
+        tenant_id=tenant_id,
         title=payload.title,
         description=payload.description,
         status=payload.status or "pending",
@@ -176,6 +203,15 @@ def create_task(payload: TaskCreate, user: User = Depends(get_current_user), db:
         tags=payload.tags or [],
     )
     db.add(task)
+    db.flush()                                                     # ⭐
+
+    AuditService(db).log_created_obj(                              # ⭐
+        entity_obj=task,
+        tenant_id=tenant_id,
+        user=user,
+        request=request,
+    )
+
     db.commit()
     db.refresh(task)
     return task
@@ -189,10 +225,15 @@ def create_task(payload: TaskCreate, user: User = Depends(get_current_user), db:
 def update_task(
     task_id: int,
     payload: TaskUpdate,
-    user: User = Depends(get_current_user),
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("tasks", "edit")),
     db: Session = Depends(get_db),
 ):
     task = _get_task_or_404(db, task_id, user)
+
+    # Snapshot before
+    before = {c.name: getattr(task, c.name) for c in task.__table__.columns}  # ⭐
+
     update_data = payload.model_dump(exclude_unset=True)
 
     if update_data.get("status") == "completed" and task.status != "completed":
@@ -200,6 +241,21 @@ def update_task(
 
     for key, value in update_data.items():
         setattr(task, key, value)
+    db.flush()                                                     # ⭐
+
+    # Snapshot after
+    after = {c.name: getattr(task, c.name) for c in task.__table__.columns}   # ⭐
+
+    svc = AuditService(db)                                         # ⭐
+    changes = svc.diff(before, after, ignore_fields=["updated_at"])  # ⭐
+    if changes:                                                    # ⭐
+        svc.log_updated_obj(                                       # ⭐
+            entity_obj=task,
+            tenant_id=task.tenant_id,
+            user=user,
+            changes=changes,
+            request=request,
+        )
 
     db.commit()
     db.refresh(task)
@@ -211,8 +267,21 @@ def update_task(
 # ============================================================
 
 @router.delete("/{task_id}", status_code=204)
-def delete_task(task_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_task(
+    task_id: int,
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("tasks", "delete")),
+    db: Session = Depends(get_db),
+):
     task = _get_task_or_404(db, task_id, user)
+
+    AuditService(db).log_deleted_obj(                              # ⭐
+        entity_obj=task,
+        tenant_id=task.tenant_id,
+        user=user,
+        request=request,
+    )
+
     db.delete(task)
     db.commit()
     return None
@@ -226,7 +295,7 @@ def delete_task(task_id: int, user: User = Depends(get_current_user), db: Sessio
 async def upload_attachment(
     task_id: int,
     file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("tasks", "edit")),
     db: Session = Depends(get_db),
 ):
     task = _get_task_or_404(db, task_id, user)
@@ -267,7 +336,7 @@ async def upload_attachment(
 async def upload_multiple(
     task_id: int,
     files: List[UploadFile] = File(...),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("tasks", "edit")),
     db: Session = Depends(get_db),
 ):
     task = _get_task_or_404(db, task_id, user)
@@ -313,7 +382,7 @@ async def upload_multiple(
 def delete_attachment(
     task_id: int,
     attachment_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("tasks", "edit")),
     db: Session = Depends(get_db),
 ):
     _get_task_or_404(db, task_id, user)

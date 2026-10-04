@@ -6,6 +6,7 @@ import secrets
 
 from app.db.database import get_db
 from app.core.deps import get_current_user
+from app.core.permissions import require_feature_permission
 from app.models.user import User
 from app.models.proposal_template import ProposalTemplate
 from app.models.proposal import Proposal
@@ -13,6 +14,10 @@ from app.schemas.proposal_template import (
     TemplateCreate,
     TemplateUpdate,
     TemplateResponse,
+)
+from app.services.template_services import (
+    create_default_templates_for_industry,
+    render_template_content,
 )
 
 router = APIRouter(prefix="/proposal-templates", tags=["Proposal Templates"])
@@ -34,7 +39,7 @@ def list_templates(
     search: Optional[str] = None,
     skip: int = 0,
     limit: int = 100,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("pipeline", "view")),
     db: Session = Depends(get_db),
 ):
     """List all proposal templates."""
@@ -48,14 +53,50 @@ def list_templates(
     return query.order_by(desc(ProposalTemplate.created_at)).offset(skip).limit(limit).all()
 
 
-# ============ USE TEMPLATE ============
+# ============ RENDER TEMPLATE AS FULL DOCUMENT ============
+@router.post("/{template_id}/render")
+def render_template_preview(
+    template_id: int,
+    payload: dict,
+    user: User = Depends(require_feature_permission("pipeline", "view")),
+    db: Session = Depends(get_db),
+):
+    """
+    Return template rendered as a full proposal document.
+
+    Payload (optional):
+        { "client_name": "Acme Corp" }
+    """
+    query = apply_template_filter(
+        db.query(ProposalTemplate), user
+    ).filter(ProposalTemplate.id == template_id)
+
+    template = query.first()
+    if not template:
+        raise HTTPException(404, "Template not found")
+
+    client_name = payload.get("client_name")
+    document = render_template_content(template, client_name)
+
+    return {
+        "template_id": template.id,
+        "title": template.title,
+        "description": template.description,
+        "amount": float(template.amount) if template.amount else 0,
+        "currency": template.currency,
+        "terms": template.terms,
+        "document_content": document,
+    }
+
+
+# ============ USE TEMPLATE (creates proposal) ============
 @router.post("/{template_id}/use", status_code=201)
 def use_template(
     template_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("pipeline", "create")),
     db: Session = Depends(get_db),
 ):
-    """Create a new proposal from a template."""
+    """Create a new proposal from a template (uses full rendered document)."""
     query = apply_template_filter(
         db.query(ProposalTemplate), user
     ).filter(ProposalTemplate.id == template_id)
@@ -69,6 +110,9 @@ def use_template(
 
     public_token = secrets.token_urlsafe(32)
 
+    # ⭐ Render full document from content sections
+    document_content = render_template_content(template)
+
     proposal = Proposal(
         tenant_id=user.tenant_id,
         title=template.title,
@@ -76,6 +120,7 @@ def use_template(
         amount=template.amount,
         currency=template.currency,
         terms=template.terms,
+        document_content=document_content,     # ⭐ Full rendered doc
         status="draft",
         public_token=public_token,
         version="v1",
@@ -99,7 +144,7 @@ def use_template(
 @router.get("/{template_id}", response_model=TemplateResponse)
 def get_template(
     template_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("pipeline", "view")),
     db: Session = Depends(get_db),
 ):
     """Retrieve a single template."""
@@ -117,7 +162,7 @@ def get_template(
 @router.post("", response_model=TemplateResponse, status_code=201)
 def create_template(
     payload: TemplateCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("pipeline", "create")),
     db: Session = Depends(get_db),
 ):
     """Create a new proposal template."""
@@ -148,7 +193,7 @@ def create_template(
 def update_template(
     template_id: int,
     payload: TemplateUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("pipeline", "edit")),
     db: Session = Depends(get_db),
 ):
     """Update an existing template."""
@@ -173,7 +218,7 @@ def update_template(
 @router.delete("/{template_id}", status_code=204)
 def delete_template(
     template_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("pipeline", "delete")),
     db: Session = Depends(get_db),
 ):
     """Delete a template."""

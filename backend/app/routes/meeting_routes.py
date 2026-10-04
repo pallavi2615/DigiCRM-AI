@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional, List
@@ -6,6 +6,9 @@ from datetime import datetime, date
 
 from app.db.database import get_db
 from app.core.deps import get_current_user
+from app.core.permissions import require_feature_permission
+from app.core.constants import SUPER_ADMIN_ROLE as SA_CONST        # ⭐
+from app.services.audit_service import AuditService                # ⭐
 from app.models.user import User
 from app.models.meeting import Meeting
 from app.schemas.meeting import MeetingCreate, MeetingUpdate, MeetingResponse
@@ -16,11 +19,12 @@ SUPER_ADMIN_ROLE = "super_admin"
 
 
 def _apply_tenant_filter(query, user: User):
-    if user.role != SUPER_ADMIN_ROLE:
+    if user.role != SA_CONST:
         query = query.filter(Meeting.tenant_id == user.tenant_id)
     return query
 
 
+# ============ LIST ============
 @router.get("", response_model=List[MeetingResponse])
 def list_meetings(
     status: Optional[str] = None,
@@ -29,7 +33,7 @@ def list_meetings(
     upcoming: Optional[bool] = False,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("meetings", "view")),
     db: Session = Depends(get_db),
 ):
     query = _apply_tenant_filter(db.query(Meeting), user)
@@ -47,8 +51,12 @@ def list_meetings(
     return query.order_by(Meeting.scheduled_at).offset(skip).limit(limit).all()
 
 
+# ============ STATS ============
 @router.get("/stats")
-def meeting_stats(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def meeting_stats(
+    user: User = Depends(require_feature_permission("meetings", "view")),
+    db: Session = Depends(get_db),
+):
     query = _apply_tenant_filter(db.query(Meeting), user)
     return {
         "total": query.count(),
@@ -58,16 +66,29 @@ def meeting_stats(user: User = Depends(get_current_user), db: Session = Depends(
     }
 
 
+# ============ GET SINGLE ============
 @router.get("/{meeting_id}", response_model=MeetingResponse)
-def get_meeting(meeting_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    meeting = _apply_tenant_filter(db.query(Meeting), user).filter(Meeting.id == meeting_id).first()
+def get_meeting(
+    meeting_id: int,
+    user: User = Depends(require_feature_permission("meetings", "view")),
+    db: Session = Depends(get_db),
+):
+    meeting = _apply_tenant_filter(
+        db.query(Meeting), user
+    ).filter(Meeting.id == meeting_id).first()
     if not meeting:
         raise HTTPException(404, "Meeting not found")
     return meeting
 
 
+# ============ CREATE ============
 @router.post("", response_model=MeetingResponse, status_code=201)
-def create_meeting(payload: MeetingCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_meeting(
+    payload: MeetingCreate,
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("meetings", "create")),
+    db: Session = Depends(get_db),
+):
     if not user.tenant_id:
         raise HTTPException(400, "User has no tenant")
 
@@ -88,30 +109,82 @@ def create_meeting(payload: MeetingCreate, user: User = Depends(get_current_user
         company_id=payload.company_id,
     )
     db.add(meeting)
+    db.flush()                                                     # ⭐
+
+    AuditService(db).log_created_obj(                              # ⭐
+        entity_obj=meeting,
+        tenant_id=user.tenant_id,
+        user=user,
+        request=request,
+    )
+
     db.commit()
     db.refresh(meeting)
     return meeting
 
 
+# ============ UPDATE ============
 @router.put("/{meeting_id}", response_model=MeetingResponse)
-def update_meeting(meeting_id: int, payload: MeetingUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    meeting = _apply_tenant_filter(db.query(Meeting), user).filter(Meeting.id == meeting_id).first()
+def update_meeting(
+    meeting_id: int,
+    payload: MeetingUpdate,
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("meetings", "edit")),
+    db: Session = Depends(get_db),
+):
+    meeting = _apply_tenant_filter(
+        db.query(Meeting), user
+    ).filter(Meeting.id == meeting_id).first()
     if not meeting:
         raise HTTPException(404, "Meeting not found")
+
+    # Snapshot before
+    before = {c.name: getattr(meeting, c.name) for c in meeting.__table__.columns}  # ⭐
 
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(meeting, key, value)
+    db.flush()                                                     # ⭐
+
+    # Snapshot after
+    after = {c.name: getattr(meeting, c.name) for c in meeting.__table__.columns}   # ⭐
+
+    svc = AuditService(db)                                         # ⭐
+    changes = svc.diff(before, after, ignore_fields=["updated_at"])  # ⭐
+    if changes:                                                    # ⭐
+        svc.log_updated_obj(                                       # ⭐
+            entity_obj=meeting,
+            tenant_id=meeting.tenant_id,
+            user=user,
+            changes=changes,
+            request=request,
+        )
 
     db.commit()
     db.refresh(meeting)
     return meeting
 
 
+# ============ DELETE ============
 @router.delete("/{meeting_id}", status_code=204)
-def delete_meeting(meeting_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    meeting = _apply_tenant_filter(db.query(Meeting), user).filter(Meeting.id == meeting_id).first()
+def delete_meeting(
+    meeting_id: int,
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("meetings", "delete")),
+    db: Session = Depends(get_db),
+):
+    meeting = _apply_tenant_filter(
+        db.query(Meeting), user
+    ).filter(Meeting.id == meeting_id).first()
     if not meeting:
         raise HTTPException(404, "Meeting not found")
+
+    AuditService(db).log_deleted_obj(                              # ⭐
+        entity_obj=meeting,
+        tenant_id=meeting.tenant_id,
+        user=user,
+        request=request,
+    )
+
     db.delete(meeting)
     db.commit()
     return None

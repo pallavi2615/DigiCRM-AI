@@ -509,6 +509,58 @@ CREATE INDEX IF NOT EXISTS idx_ticket_attachments ON ticket_attachments(ticket_i
 \q
 
 
+CREATE TABLE IF NOT EXISTS automation_rules (
+    id SERIAL PRIMARY KEY,
+    tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    
+    -- ⭐ 3 TYPES
+    rule_type VARCHAR(50) NOT NULL,           -- event, time, condition
+    
+    -- Trigger
+    trigger_event VARCHAR(100),                -- lead_created, proposal_sent
+    trigger_schedule VARCHAR(100),             -- every_6_hours, daily_9am
+    trigger_condition JSONB DEFAULT '{}',      -- {field, operator, value}
+    
+    -- Entity (kispe apply hoga)
+    entity_type VARCHAR(50) DEFAULT 'lead',    -- lead, proposal, ticket, task
+    
+    -- Action
+    action_type VARCHAR(50) NOT NULL,          -- move_stage, set_priority, notify, assign
+    action_config JSONB DEFAULT '{}',
+    
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    priority INTEGER DEFAULT 0,                -- Higher = applied first
+    last_run_at TIMESTAMP,
+    run_count INTEGER DEFAULT 0,
+    
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_rules_tenant ON automation_rules(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_rules_type ON automation_rules(rule_type);
+CREATE INDEX IF NOT EXISTS idx_rules_active ON automation_rules(is_active);
+
+-- Automation execution log
+CREATE TABLE IF NOT EXISTS automation_logs (
+    id SERIAL PRIMARY KEY,
+    tenant_id INTEGER REFERENCES tenants(id) ON DELETE CASCADE,
+    rule_id INTEGER REFERENCES automation_rules(id) ON DELETE CASCADE,
+    entity_type VARCHAR(50),
+    entity_id INTEGER,
+    action_taken VARCHAR(100),
+    result VARCHAR(50),                        -- success, failed, skipped
+    error_message TEXT,
+    executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_logs_rule ON automation_logs(rule_id);
+CREATE INDEX IF NOT EXISTS idx_logs_tenant ON automation_logs(tenant_id);
+
 
 -- Default roles
 INSERT INTO roles (name, label, level, permissions) VALUES

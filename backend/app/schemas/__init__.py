@@ -5,6 +5,24 @@ from app.schemas.auth import (
     AuthResponse,
 )
 from app.schemas.user import UserResponse
+from app.schemas.it_project import (
+    ITProjectBase,
+    ITProjectCreate,
+    ITProjectUpdate,
+    ITProjectResponse,
+    ITProjectStageUpdate,
+    ITProjectStats,
+    ITProjectListResponse,
+)
+from app.schemas.it_ticket import (
+    ITTicketBase,
+    ITTicketCreate,
+    ITTicketUpdate,
+    ITTicketStatusUpdate,
+    ITTicketResponse,
+    ITTicketStats,
+    ITTicketListResponse,
+)
 
 __all__ = [
     "SignupRequest",
@@ -12,4 +30,18 @@ __all__ = [
     "TokenResponse",
     "AuthResponse",
     "UserResponse",
+    "ITProjectBase",
+    "ITProjectCreate",
+    "ITProjectUpdate",
+    "ITProjectResponse",
+    "ITProjectStageUpdate",
+    "ITProjectStats",
+    "ITProjectListResponse",
+    "ITTicketBase",
+    "ITTicketCreate",
+    "ITTicketUpdate",
+    "ITTicketStatusUpdate",
+    "ITTicketResponse",
+    "ITTicketStats",
+    "ITTicketListResponse",
 ]

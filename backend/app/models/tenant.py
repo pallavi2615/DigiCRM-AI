@@ -15,6 +15,13 @@ class Tenant(Base):
     branding = Column(JSON, default={})
     settings = Column(JSON, default={})
     status = Column(String(20), default="active")
+    industry_template = Column(String(50))
+    plan = Column(String(50), default="lite")
+    tagline = Column(String(500))
+    primary_color = Column(String(20), default="#4F46E5")
+    accent_color = Column(String(20), default="#a855f7")
+    logo_url = Column(String(500))
+    custom_domain = Column(String(255), unique=True, nullable=True, index=True)
     # created_at = Column(DateTime, server_default=func.now())
     # updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

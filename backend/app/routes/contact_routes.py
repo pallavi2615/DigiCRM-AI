@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_
 from typing import Optional, List
@@ -9,6 +9,9 @@ from datetime import datetime
 
 from app.db.database import get_db
 from app.core.deps import get_current_user
+from app.core.permissions import require_feature_permission
+from app.core.constants import SUPER_ADMIN_ROLE as SA_CONST        # ⭐
+from app.services.audit_service import AuditService                # ⭐
 from app.models.user import User
 from app.models.contact import Contact
 from app.schemas.contact import (
@@ -24,7 +27,7 @@ SUPER_ADMIN_ROLE = "super_admin"
 
 
 def _apply_tenant_filter(query, user: User):
-    if user.role != SUPER_ADMIN_ROLE:
+    if user.role != SA_CONST:
         query = query.filter(Contact.tenant_id == user.tenant_id)
     return query
 
@@ -40,7 +43,10 @@ def _get_contact_or_404(db: Session, contact_id: int, user: User) -> Contact:
 
 # ============ STATS ============
 @router.get("/stats")
-def contact_stats(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def contact_stats(
+    user: User = Depends(require_feature_permission("contacts", "view")),
+    db: Session = Depends(get_db),
+):
     query = _apply_tenant_filter(db.query(Contact), user)
     return {
         "total": query.count(),
@@ -56,7 +62,7 @@ def list_contacts(
     status: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("contacts", "view")),
     db: Session = Depends(get_db),
 ):
     query = _apply_tenant_filter(db.query(Contact), user)
@@ -79,7 +85,10 @@ def list_contacts(
 
 # ============ EXPORT ============
 @router.get("/export")
-def export_contacts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def export_contacts(
+    user: User = Depends(require_feature_permission("contacts", "view")),
+    db: Session = Depends(get_db),
+):
     contacts = _apply_tenant_filter(db.query(Contact), user).all()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -95,7 +104,7 @@ def export_contacts(user: User = Depends(get_current_user), db: Session = Depend
 @router.post("/import", response_model=ContactImportResult)
 async def import_contacts(
     file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("contacts", "create")),
     db: Session = Depends(get_db),
 ):
     if not user.tenant_id:
@@ -131,7 +140,11 @@ async def import_contacts(
 
 # ============ GET SINGLE ============
 @router.get("/{contact_id}", response_model=ContactResponse)
-def get_contact(contact_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_contact(
+    contact_id: int,
+    user: User = Depends(require_feature_permission("contacts", "view")),
+    db: Session = Depends(get_db),
+):
     return _get_contact_or_404(db, contact_id, user)
 
 
@@ -139,7 +152,8 @@ def get_contact(contact_id: int, user: User = Depends(get_current_user), db: Ses
 @router.post("", response_model=ContactResponse, status_code=201)
 def create_contact(
     payload: ContactCreate,
-    user: User = Depends(get_current_user),
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("contacts", "create")),
     db: Session = Depends(get_db),
 ):
     if not user.tenant_id:
@@ -160,6 +174,15 @@ def create_contact(
         status=payload.status or "active",
     )
     db.add(contact)
+    db.flush()                                                     # ⭐
+
+    AuditService(db).log_created_obj(                              # ⭐
+        entity_obj=contact,
+        tenant_id=user.tenant_id,
+        user=user,
+        request=request,
+    )
+
     db.commit()
     db.refresh(contact)
     return contact
@@ -170,12 +193,33 @@ def create_contact(
 def update_contact(
     contact_id: int,
     payload: ContactUpdate,
-    user: User = Depends(get_current_user),
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("contacts", "edit")),
     db: Session = Depends(get_db),
 ):
     contact = _get_contact_or_404(db, contact_id, user)
+
+    # Snapshot before
+    before = {c.name: getattr(contact, c.name) for c in contact.__table__.columns}  # ⭐
+
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(contact, key, value)
+    db.flush()                                                     # ⭐
+
+    # Snapshot after
+    after = {c.name: getattr(contact, c.name) for c in contact.__table__.columns}   # ⭐
+
+    svc = AuditService(db)                                         # ⭐
+    changes = svc.diff(before, after, ignore_fields=["updated_at"])  # ⭐
+    if changes:                                                    # ⭐
+        svc.log_updated_obj(                                       # ⭐
+            entity_obj=contact,
+            tenant_id=contact.tenant_id,
+            user=user,
+            changes=changes,
+            request=request,
+        )
+
     db.commit()
     db.refresh(contact)
     return contact
@@ -183,8 +227,21 @@ def update_contact(
 
 # ============ DELETE ============
 @router.delete("/{contact_id}", status_code=204)
-def delete_contact(contact_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_contact(
+    contact_id: int,
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("contacts", "delete")),
+    db: Session = Depends(get_db),
+):
     contact = _get_contact_or_404(db, contact_id, user)
+
+    AuditService(db).log_deleted_obj(                              # ⭐
+        entity_obj=contact,
+        tenant_id=contact.tenant_id,
+        user=user,
+        request=request,
+    )
+
     db.delete(contact)
     db.commit()
     return None

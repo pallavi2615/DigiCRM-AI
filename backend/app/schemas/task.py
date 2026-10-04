@@ -15,6 +15,7 @@ class AttachmentResponse(BaseModel):
         from_attributes = True
 
 class TaskCreate(BaseModel):
+    tenant_id: Optional[int] = None 
     title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     status: Optional[str] = "pending"

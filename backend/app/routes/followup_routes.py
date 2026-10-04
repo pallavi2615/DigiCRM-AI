@@ -3,9 +3,21 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional, List
 from datetime import datetime, date, timedelta
+import logging                                                        # ⭐
 
 from app.db.database import get_db
 from app.core.deps import get_current_user
+from app.core.permissions import (
+    require_role,
+    require_feature_permission,
+)
+from app.core.constants import (
+    SUPER_ADMIN_ROLE as SA_CONST,
+    ADMIN_ROLE,
+    MANAGER_ROLE,
+    EXECUTIVE_ROLE,
+)
+from app.services.notification_service import NotificationService     # ⭐
 from app.models.user import User
 from app.models.lead import Lead
 from app.models.Followup import (
@@ -25,6 +37,8 @@ from app.schemas.followup import (
     AttachSequenceRequest,
 )
 
+logger = logging.getLogger(__name__)                                 # ⭐
+
 router = APIRouter(prefix="/followups", tags=["Follow-ups"])
 
 SUPER_ADMIN_ROLE = "super_admin"
@@ -37,12 +51,72 @@ def _tenant_filter(query, model, user: User):
 
 
 # ============================================================
+# HELPER — Check and notify overdue follow-up tasks
+# ============================================================
+
+def _check_and_notify_overdue(db: Session, user: User, lead_id: Optional[int] = None) -> None:
+    """
+    Scan for overdue follow-up tasks and generate notifications
+    for the assignee. Uses `overdue_notified` flag to avoid spam.
+    """
+    try:
+        today = date.today()
+
+        query = db.query(FollowupTask).filter(
+            FollowupTask.tenant_id == user.tenant_id,
+            FollowupTask.status == "pending",
+            FollowupTask.due_date < today,
+            FollowupTask.overdue_notified == False,
+        )
+        if lead_id:
+            query = query.filter(FollowupTask.lead_id == lead_id)
+
+        overdue_tasks = query.limit(50).all()
+        if not overdue_tasks:
+            return
+
+        notif_svc = NotificationService(db)
+
+        for task in overdue_tasks:
+            target_user_id = task.assigned_to or task.created_by
+            if not target_user_id:
+                # Mark to avoid re-scanning; can't notify without a recipient
+                task.overdue_notified = True
+                continue
+
+            lead = db.query(Lead).filter(Lead.id == task.lead_id).first()
+            lead_name = (
+                (lead.name or lead.email) if lead
+                else f"Lead #{task.lead_id}"
+            )
+
+            notif_svc.notify_followup_overdue(
+                user_id=target_user_id,
+                tenant_id=task.tenant_id,
+                lead_id=task.lead_id,
+                lead_name=lead_name,
+                due_date=task.due_date.isoformat() if task.due_date else "",
+            )
+            task.overdue_notified = True
+
+        db.commit()
+    except Exception as e:
+        logger.exception("Overdue followup notification failed (non-fatal): %s", e)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+# ============================================================
 # SEQUENCES
 # ============================================================
 
 @router.get("/sequences", response_model=List[SequenceResponse])
 def list_sequences(
-    user: User = Depends(get_current_user),
+    user: User = Depends(
+        require_role(SA_CONST, ADMIN_ROLE, MANAGER_ROLE, EXECUTIVE_ROLE)
+    ),
     db: Session = Depends(get_db),
 ):
     query = _tenant_filter(db.query(FollowupSequence), FollowupSequence, user)
@@ -67,7 +141,9 @@ def list_sequences(
 @router.post("/sequences", response_model=SequenceResponse, status_code=201)
 def create_sequence(
     payload: SequenceCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(
+        require_role(SA_CONST, ADMIN_ROLE, MANAGER_ROLE)
+    ),
     db: Session = Depends(get_db),
 ):
     if not user.tenant_id:
@@ -115,7 +191,9 @@ def create_sequence(
 @router.get("/sequences/{sequence_id}", response_model=SequenceResponse)
 def get_sequence(
     sequence_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(
+        require_role(SA_CONST, ADMIN_ROLE, MANAGER_ROLE, EXECUTIVE_ROLE)
+    ),
     db: Session = Depends(get_db),
 ):
     query = _tenant_filter(db.query(FollowupSequence), FollowupSequence, user)
@@ -140,7 +218,9 @@ def get_sequence(
 @router.delete("/sequences/{sequence_id}", status_code=204)
 def delete_sequence(
     sequence_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(
+        require_role(SA_CONST, ADMIN_ROLE)
+    ),
     db: Session = Depends(get_db),
 ):
     query = _tenant_filter(db.query(FollowupSequence), FollowupSequence, user)
@@ -163,7 +243,7 @@ def list_tasks(
     due_today: Optional[bool] = False,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("tasks", "view")),
     db: Session = Depends(get_db),
 ):
     query = _tenant_filter(db.query(FollowupTask), FollowupTask, user)
@@ -174,13 +254,23 @@ def list_tasks(
     if due_today:
         query = query.filter(FollowupTask.due_date == date.today())
 
-    return query.order_by(FollowupTask.due_date, desc(FollowupTask.created_at)).offset(skip).limit(limit).all()
+    tasks = (
+        query
+        .order_by(FollowupTask.due_date, desc(FollowupTask.created_at))
+        .offset(skip).limit(limit).all()
+    )
+
+    # ⭐ Check and notify overdue follow-ups
+    if user.tenant_id:
+        _check_and_notify_overdue(db, user, lead_id=lead_id)
+
+    return tasks
 
 
 @router.post("/tasks", response_model=TaskResponse, status_code=201)
 def create_task(
     payload: TaskCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("tasks", "create")),
     db: Session = Depends(get_db),
 ):
     if not user.tenant_id:
@@ -206,7 +296,7 @@ def create_task(
 def update_task(
     task_id: int,
     payload: TaskUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("tasks", "edit")),
     db: Session = Depends(get_db),
 ):
     query = _tenant_filter(db.query(FollowupTask), FollowupTask, user)
@@ -231,7 +321,7 @@ def update_task(
 @router.delete("/tasks/{task_id}", status_code=204)
 def delete_task(
     task_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("tasks", "delete")),
     db: Session = Depends(get_db),
 ):
     query = _tenant_filter(db.query(FollowupTask), FollowupTask, user)
@@ -251,13 +341,13 @@ def delete_task(
 def attach_sequence_to_lead(
     lead_id: int,
     payload: AttachSequenceRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("leads", "edit")),
     db: Session = Depends(get_db),
 ):
     """Attach a follow-up sequence to a lead — auto-creates tasks."""
     # Get lead
     lead_query = db.query(Lead).filter(Lead.id == lead_id)
-    if user.role != SUPER_ADMIN_ROLE:
+    if user.role != SA_CONST:
         lead_query = lead_query.filter(Lead.tenant_id == user.tenant_id)
     lead = lead_query.first()
     if not lead:
@@ -265,7 +355,7 @@ def attach_sequence_to_lead(
 
     # Get sequence
     seq_query = db.query(FollowupSequence).filter(FollowupSequence.id == payload.sequence_id)
-    if user.role != SUPER_ADMIN_ROLE:
+    if user.role != SA_CONST:
         seq_query = seq_query.filter(FollowupSequence.tenant_id == user.tenant_id)
     seq = seq_query.first()
     if not seq:
@@ -279,13 +369,12 @@ def attach_sequence_to_lead(
         .all()
     )
 
-    # Delete existing pending tasks for this lead
+    # Clear out any still-active tasks from a previous sequence attach
     db.query(FollowupTask).filter(
         FollowupTask.lead_id == lead.id,
-        FollowupTask.status == "pending",
-    ).delete()
+        FollowupTask.status.in_(["pending", "in_progress"]),
+    ).delete(synchronize_session=False)
 
-    # Base date
     base_date = (lead.created_at.date() if lead.created_at else date.today())
 
     created = []
@@ -326,7 +415,7 @@ def attach_sequence_to_lead(
 @router.get("/responses/{lead_id}", response_model=List[LeadResponseResponse])
 def list_lead_responses(
     lead_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("leads", "view")),
     db: Session = Depends(get_db),
 ):
     query = _tenant_filter(db.query(LeadResponse), LeadResponse, user)
@@ -336,7 +425,7 @@ def list_lead_responses(
 @router.post("/responses", response_model=LeadResponseResponse, status_code=201)
 def create_lead_response(
     payload: LeadResponseCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("leads", "edit")),
     db: Session = Depends(get_db),
 ):
     """Record a lead response — stops pending follow-up tasks."""

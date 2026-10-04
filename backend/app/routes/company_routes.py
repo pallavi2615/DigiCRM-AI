@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_, func
 from typing import Optional, List
@@ -9,6 +9,9 @@ from datetime import datetime
 
 from app.db.database import get_db
 from app.core.deps import get_current_user
+from app.core.permissions import require_feature_permission
+from app.core.constants import SUPER_ADMIN_ROLE as SA_CONST        # ⭐
+from app.services.audit_service import AuditService                # ⭐
 from app.models.user import User
 from app.models.company import Company
 from app.schemas.company import (
@@ -24,7 +27,7 @@ SUPER_ADMIN_ROLE = "super_admin"
 
 
 def _apply_tenant_filter(query, user: User):
-    if user.role != SUPER_ADMIN_ROLE:
+    if user.role != SA_CONST:
         query = query.filter(Company.tenant_id == user.tenant_id)
     return query
 
@@ -41,7 +44,7 @@ def _get_company_or_404(db: Session, company_id: int, user: User) -> Company:
 # ============ STATS ============
 @router.get("/stats")
 def company_stats(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("companies", "view")),
     db: Session = Depends(get_db),
 ):
     query = _apply_tenant_filter(db.query(Company), user)
@@ -64,7 +67,7 @@ def list_companies(
     status: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("companies", "view")),
     db: Session = Depends(get_db),
 ):
     query = _apply_tenant_filter(db.query(Company), user)
@@ -87,7 +90,7 @@ def list_companies(
 # ============ EXPORT ============
 @router.get("/export")
 def export_companies(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("companies", "view")),
     db: Session = Depends(get_db),
 ):
     companies = _apply_tenant_filter(db.query(Company), user).all()
@@ -105,7 +108,7 @@ def export_companies(
 @router.post("/import", response_model=CompanyImportResult)
 async def import_companies(
     file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("companies", "create")),
     db: Session = Depends(get_db),
 ):
     if not user.tenant_id:
@@ -134,7 +137,11 @@ async def import_companies(
 
 # ============ GET SINGLE ============
 @router.get("/{company_id}", response_model=CompanyResponse)
-def get_company(company_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_company(
+    company_id: int,
+    user: User = Depends(require_feature_permission("companies", "view")),
+    db: Session = Depends(get_db),
+):
     return _get_company_or_404(db, company_id, user)
 
 
@@ -142,7 +149,8 @@ def get_company(company_id: int, user: User = Depends(get_current_user), db: Ses
 @router.post("", response_model=CompanyResponse, status_code=201)
 def create_company(
     payload: CompanyCreate,
-    user: User = Depends(get_current_user),
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("companies", "create")),
     db: Session = Depends(get_db),
 ):
     if not user.tenant_id:
@@ -164,6 +172,15 @@ def create_company(
         status=payload.status or "active",
     )
     db.add(company)
+    db.flush()                                                     # ⭐
+
+    AuditService(db).log_created_obj(                              # ⭐
+        entity_obj=company,
+        tenant_id=user.tenant_id,
+        user=user,
+        request=request,
+    )
+
     db.commit()
     db.refresh(company)
     return company
@@ -174,12 +191,33 @@ def create_company(
 def update_company(
     company_id: int,
     payload: CompanyUpdate,
-    user: User = Depends(get_current_user),
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("companies", "edit")),
     db: Session = Depends(get_db),
 ):
     company = _get_company_or_404(db, company_id, user)
+
+    # Snapshot before
+    before = {c.name: getattr(company, c.name) for c in company.__table__.columns}  # ⭐
+
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(company, key, value)
+    db.flush()                                                     # ⭐
+
+    # Snapshot after
+    after = {c.name: getattr(company, c.name) for c in company.__table__.columns}   # ⭐
+
+    svc = AuditService(db)                                         # ⭐
+    changes = svc.diff(before, after, ignore_fields=["updated_at"])  # ⭐
+    if changes:                                                    # ⭐
+        svc.log_updated_obj(                                       # ⭐
+            entity_obj=company,
+            tenant_id=company.tenant_id,
+            user=user,
+            changes=changes,
+            request=request,
+        )
+
     db.commit()
     db.refresh(company)
     return company
@@ -187,8 +225,21 @@ def update_company(
 
 # ============ DELETE ============
 @router.delete("/{company_id}", status_code=204)
-def delete_company(company_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_company(
+    company_id: int,
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("companies", "delete")),
+    db: Session = Depends(get_db),
+):
     company = _get_company_or_404(db, company_id, user)
+
+    AuditService(db).log_deleted_obj(                              # ⭐
+        entity_obj=company,
+        tenant_id=company.tenant_id,
+        user=user,
+        request=request,
+    )
+
     db.delete(company)
     db.commit()
     return None

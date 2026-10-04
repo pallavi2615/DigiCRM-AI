@@ -14,10 +14,19 @@ from app.models.Followup import (
     FollowupTask,
     LeadResponse,
 )
-from app.models.task import Task
+from app.models.task import Task,  TaskAttachment
 from app.models.calendar_event import CalendarEvent
 from app.models.meeting import Meeting
 from app.models.ticket import Ticket, TicketMessage, TicketAttachment
+from app.models.automation import AutomationRuleSetting, AutomationLog
+from app.models.notification import Notification
+from app.models.landing_event import LandingEvent
+from app.models.industry import Industry, TenantIndustry
+from app.models.it_project import ITProject
+from app.models.it_ticket import ITTicket
+from app.models.role_change_history import RoleChangeHistory
+from app.models.cashflow import CashflowEntry
+from app.models.payment import PaymentEntry, BankAccount
 
 __all__ = [
     "Tenant",
@@ -40,5 +49,17 @@ __all__ = [
     "Meeting",
     "Ticket", 
     "TicketMessage",
-    "TicketAttachment"
+    "TicketAttachment",
+    "AutomationRuleSetting",
+    "AutomationLog",
+    "Notification",
+    "LandingEvent",
+    "TenantIndustry",
+    "Industry",
+    "ITProject",
+    "ITTicket",
+    "RoleChangeHistory",
+    "CashflowEntry",
+    "PaymentEntry",
+    "BankAccount",
 ]

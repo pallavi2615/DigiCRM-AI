@@ -12,7 +12,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(50), default="executive", index=True)
-    status = Column(String(20), default="active", index=True)
+    status = Column(String(20), default="active", nullable=False) 
     phone = Column(String(20))
     avatar_url = Column(String(500))
     department = Column(String(100))
@@ -27,6 +27,7 @@ class User(Base):
 
     last_password_change = Column(DateTime)
     email_verified = Column(Boolean, default=False)
+    must_change_password = Column(Boolean, default=False)
     failed_login_attempts = Column(Integer, default=0)
     locked_until = Column(DateTime)
     last_login = Column(DateTime)
@@ -36,3 +37,4 @@ class User(Base):
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+

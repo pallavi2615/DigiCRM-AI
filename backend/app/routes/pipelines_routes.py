@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import Optional
 
 from app.db.database import get_db
 from app.core.deps import get_current_user
+from app.core.permissions import require_feature_permission
+from app.core.constants import SUPER_ADMIN_ROLE as SA_CONST        # ⭐
+from app.services.audit_service import AuditService                # ⭐
 from app.models.user import User
 from app.models.lead import Lead
 from app.models.tenant_stage import TenantStage
@@ -67,18 +70,12 @@ def get_pipeline(
     priority: Optional[str] = Query(None),
     stage: Optional[str] = Query(None),
     company: Optional[str] = Query(None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("pipeline", "view")),
     db: Session = Depends(get_db),
 ):
-    """
-    Get the complete pipeline (Kanban view).
+    """Get the complete pipeline (Kanban view)."""
+    is_superadmin = user.role == SA_CONST
 
-    SuperAdmin sees all tenants' leads.
-    Admin sees only their own tenant's leads.
-    """
-    is_superadmin = user.role == SUPER_ADMIN_ROLE
-
-    # Stages — SuperAdmin ke liye default (tenant 1)
     if is_superadmin:
         stages_data = DEFAULT_STAGES
     else:
@@ -86,7 +83,6 @@ def get_pipeline(
             raise HTTPException(400, "User has no tenant")
         stages_data = _get_stages(db, user.tenant_id)
 
-    # Leads query
     query = db.query(Lead)
     if not is_superadmin:
         query = query.filter(Lead.tenant_id == user.tenant_id)
@@ -98,7 +94,6 @@ def get_pipeline(
 
     leads = query.order_by(desc(Lead.updated_at)).all()
 
-    # Group by stage
     stage_groups = []
     total_deals = 0
     total_value = 0
@@ -165,11 +160,11 @@ def get_pipeline(
 
 @router.get("/stages")
 def get_pipeline_stages(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("pipeline", "view")),
     db: Session = Depends(get_db),
 ):
     """Get pipeline stage definitions."""
-    if user.role == SUPER_ADMIN_ROLE:
+    if user.role == SA_CONST:
         return DEFAULT_STAGES
     if not user.tenant_id:
         raise HTTPException(400, "User has no tenant")
@@ -182,11 +177,11 @@ def get_pipeline_stages(
 
 @router.get("/stats", response_model=PipelineStats)
 def get_pipeline_stats(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature_permission("pipeline", "view")),
     db: Session = Depends(get_db),
 ):
     """Get aggregated pipeline statistics."""
-    is_superadmin = user.role == SUPER_ADMIN_ROLE
+    is_superadmin = user.role == SA_CONST
 
     if is_superadmin:
         stages_data = DEFAULT_STAGES
@@ -239,11 +234,12 @@ def get_pipeline_stats(
 def move_deal_to_stage(
     lead_id: int,
     payload: MoveDealRequest,
-    user: User = Depends(get_current_user),
+    request: Request,                                              # ⭐
+    user: User = Depends(require_feature_permission("pipeline", "edit")),
     db: Session = Depends(get_db),
 ):
     """Move a deal (lead) to a new stage."""
-    is_superadmin = user.role == SUPER_ADMIN_ROLE
+    is_superadmin = user.role == SA_CONST
 
     query = db.query(Lead).filter(Lead.id == lead_id)
     if not is_superadmin:
@@ -262,7 +258,19 @@ def move_deal_to_stage(
     if payload.status not in valid_keys:
         raise HTTPException(400, f"Invalid stage. Valid: {', '.join(valid_keys)}")
 
+    old_status = lead.status or "new"
     lead.status = payload.status
+
+    # Log the stage change (only if it actually changed)
+    if old_status != payload.status:                               # ⭐
+        AuditService(db).log_updated_obj(                          # ⭐
+            entity_obj=lead,
+            tenant_id=lead.tenant_id,
+            user=user,
+            changes={"status": {"before": old_status, "after": payload.status}},
+            request=request,
+        )
+
     db.commit()
     db.refresh(lead)
 

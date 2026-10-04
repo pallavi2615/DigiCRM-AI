@@ -32,7 +32,7 @@ class TenantInfo(BaseModel):
 class AuthResponse(BaseModel):
     user: UserResponse
     tokens: TokenResponse
-    tenant: TenantInfo
+    tenant: Optional[TenantInfo] = None  
 
 #  Naya — Forgot Password
 class ForgotPasswordRequest(BaseModel):

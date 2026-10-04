@@ -6,7 +6,11 @@ from datetime import datetime
 
 from app.db.database import get_db
 from app.core.deps import get_current_user
-from app.core.permissions import require_super_admin
+from app.core.permissions import require_role, require_super_admin  # <-- NEW
+from app.core.constants import (  # <-- NEW
+    SUPER_ADMIN_ROLE as SA_CONST,
+    ADMIN_ROLE,
+)
 from app.models.user import User
 from app.models.webhook_event import WebhookEvent
 from app.schemas.webhook_events import (
@@ -28,7 +32,8 @@ def _apply_tenant_filter(query, user: User):
 # ============ STATS ============
 @router.get("/stats", response_model=WebhookEventStats)
 def get_webhook_event_stats(
-    user: User = Depends(get_current_user),
+    # 🔒 Only Super Admin and Admin
+    user: User = Depends(require_role(SA_CONST, ADMIN_ROLE)),
     db: Session = Depends(get_db),
 ):
     """Get webhook event statistics."""
@@ -49,7 +54,8 @@ def list_webhook_events(
     tenant_id: Optional[int] = None,
     skip: int = 0,
     limit: int = 100,
-    user: User = Depends(get_current_user),
+    # 🔒 Only Super Admin and Admin
+    user: User = Depends(require_role(SA_CONST, ADMIN_ROLE)),
     db: Session = Depends(get_db),
 ):
     """List webhook events with filters."""
@@ -66,7 +72,8 @@ def list_webhook_events(
 # ============ RETRYING ============
 @router.get("/retrying", response_model=List[WebhookEventResponse])
 def list_retrying_events(
-    user: User = Depends(get_current_user),
+    # 🔒 Only Super Admin and Admin
+    user: User = Depends(require_role(SA_CONST, ADMIN_ROLE)),
     db: Session = Depends(get_db),
 ):
     """List currently retrying webhook events."""
@@ -82,7 +89,8 @@ def list_retrying_events(
 # ============ DEAD LETTER ============
 @router.get("/dead-letter", response_model=List[WebhookEventResponse])
 def list_dead_letter_events(
-    user: User = Depends(get_current_user),
+    # 🔒 Only Super Admin and Admin
+    user: User = Depends(require_role(SA_CONST, ADMIN_ROLE)),
     db: Session = Depends(get_db),
 ):
     """List dead-letter webhook events."""
@@ -99,7 +107,8 @@ def list_dead_letter_events(
 @router.get("/{event_id}", response_model=WebhookEventResponse)
 def get_webhook_event(
     event_id: int,
-    user: User = Depends(get_current_user),
+    # 🔒 Only Super Admin and Admin
+    user: User = Depends(require_role(SA_CONST, ADMIN_ROLE)),
     db: Session = Depends(get_db),
 ):
     """Get a single webhook event."""
@@ -117,7 +126,8 @@ def get_webhook_event(
 @router.post("/{event_id}/retry", response_model=WebhookEventResponse)
 def retry_webhook_event(
     event_id: int,
-    user: User = Depends(get_current_user),
+    # 🔒 Only Super Admin and Admin
+    user: User = Depends(require_role(SA_CONST, ADMIN_ROLE)),
     db: Session = Depends(get_db),
 ):
     """Manually retry a webhook event."""
@@ -143,7 +153,8 @@ def retry_webhook_event(
 @router.delete("/{event_id}", status_code=204)
 def delete_webhook_event(
     event_id: int,
-    user: User = Depends(get_current_user),
+    # 🔒 Super Admin ONLY — destructive operation
+    user: User = Depends(require_super_admin),
     db: Session = Depends(get_db),
 ):
     """Delete a webhook event."""

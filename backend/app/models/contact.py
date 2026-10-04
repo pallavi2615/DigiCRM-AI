@@ -2,7 +2,9 @@ from sqlalchemy import (
     Column, Integer, String, Text, DateTime,
     ForeignKey, JSON
 )
+from sqlalchemy.dialects.postgresql import UUID   # ← ⭐ ADDED
 from sqlalchemy.sql import func
+import uuid                                        # ← ⭐ ADDED
 
 from app.db.database import Base
 
@@ -23,6 +25,16 @@ class Contact(Base):
         ForeignKey("tenants.id", ondelete="CASCADE"),
         index=True,
     )
+
+    # ⭐ NEW — external unique identifier
+    uuid = Column(
+        UUID(as_uuid=True),
+        unique=True,
+        nullable=False,
+        default=uuid.uuid4,
+        index=True,
+    )
+
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100))
     designation = Column(String(150))

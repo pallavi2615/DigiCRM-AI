@@ -5,7 +5,7 @@ data including clients, leads, proposals, users, and audit logs.
 All endpoints in this module require SuperAdmin privileges.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 from typing import Optional, List
@@ -88,6 +88,9 @@ def list_all_clients(
 ):
     """
     Retrieve all clients (tenants) with optional filters.
+
+    Enriched with lead/proposal/user counts using grouped queries
+    (avoids N+1 — only 4 queries total regardless of page size).
     """
     query = db.query(Tenant)
 
@@ -98,27 +101,46 @@ def list_all_clients(
 
     clients = query.order_by(desc(Tenant.created_at)).offset(skip).limit(limit).all()
 
-    # Enrich with counts
-    result = []
-    for client in clients:
-        lead_count = db.query(Lead).filter(Lead.tenant_id == client.id).count()
-        proposal_count = (
-            db.query(Proposal).filter(Proposal.tenant_id == client.id).count()
-        )
-        user_count = db.query(User).filter(User.tenant_id == client.id).count()
+    if not clients:
+        return []
 
-        result.append({
-            "id": client.id,
-            "name": client.name,
-            "subdomain": client.subdomain,
-            "status": client.status,
-            "created_at": client.created_at,
-            "lead_count": lead_count,
-            "proposal_count": proposal_count,
-            "user_count": user_count,
-        })
+    tenant_ids = [c.id for c in clients]
 
-    return result
+    # ---- Single grouped query per entity (avoids N+1) ----
+    lead_counts = dict(
+        db.query(Lead.tenant_id, func.count(Lead.id))
+        .filter(Lead.tenant_id.in_(tenant_ids))
+        .group_by(Lead.tenant_id)
+        .all()
+    )
+
+    proposal_counts = dict(
+        db.query(Proposal.tenant_id, func.count(Proposal.id))
+        .filter(Proposal.tenant_id.in_(tenant_ids))
+        .group_by(Proposal.tenant_id)
+        .all()
+    )
+
+    user_counts = dict(
+        db.query(User.tenant_id, func.count(User.id))
+        .filter(User.tenant_id.in_(tenant_ids))
+        .group_by(User.tenant_id)
+        .all()
+    )
+
+    return [
+        {
+            "id": c.id,
+            "name": c.name,
+            "subdomain": c.subdomain,
+            "status": c.status,
+            "created_at": c.created_at,
+            "lead_count": lead_counts.get(c.id, 0),
+            "proposal_count": proposal_counts.get(c.id, 0),
+            "user_count": user_counts.get(c.id, 0),
+        }
+        for c in clients
+    ]
 
 
 @router.get("/clients/{client_id}")
@@ -132,8 +154,6 @@ def get_client_detail(
 
     Includes counts of associated leads, proposals, and users.
     """
-    from fastapi import HTTPException
-
     client = db.query(Tenant).filter(Tenant.id == client_id).first()
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")

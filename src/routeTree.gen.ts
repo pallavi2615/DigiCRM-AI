@@ -52,6 +52,7 @@ import { Route as AuthenticatedProductsalesRouteImport } from './routes/_authent
 import { Route as AuthenticatedPortalRouteImport } from './routes/_authenticated/portal'
 import { Route as AuthenticatedPipelineRouteImport } from './routes/_authenticated/pipeline'
 import { Route as AuthenticatedPayoutHistoryRouteImport } from './routes/_authenticated/payout-history'
+import { Route as AuthenticatedPaymentsRouteImport } from './routes/_authenticated/payments'
 import { Route as AuthenticatedPartnerRouteImport } from './routes/_authenticated/partner'
 import { Route as AuthenticatedOnboardingRouteImport } from './routes/_authenticated/onboarding'
 import { Route as AuthenticatedNotificationsRouteImport } from './routes/_authenticated/notifications'
@@ -70,6 +71,7 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedContactsRouteImport } from './routes/_authenticated/contacts'
 import { Route as AuthenticatedCompaniesRouteImport } from './routes/_authenticated/companies'
 import { Route as AuthenticatedChooseIndustryRouteImport } from './routes/_authenticated/choose-industry'
+import { Route as AuthenticatedCashflowRouteImport } from './routes/_authenticated/cashflow'
 import { Route as AuthenticatedCalendarRouteImport } from './routes/_authenticated/calendar'
 import { Route as AuthenticatedAutomationRouteImport } from './routes/_authenticated/automation'
 import { Route as AuthenticatedAuditLogsRouteImport } from './routes/_authenticated/audit-logs'
@@ -333,6 +335,11 @@ const AuthenticatedPayoutHistoryRoute =
     path: '/payout-history',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedPaymentsRoute = AuthenticatedPaymentsRouteImport.update({
+  id: '/payments',
+  path: '/payments',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedPartnerRoute = AuthenticatedPartnerRouteImport.update({
   id: '/partner',
   path: '/partner',
@@ -429,6 +436,11 @@ const AuthenticatedChooseIndustryRoute =
     path: '/choose-industry',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedCashflowRoute = AuthenticatedCashflowRouteImport.update({
+  id: '/cashflow',
+  path: '/cashflow',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedCalendarRoute = AuthenticatedCalendarRouteImport.update({
   id: '/calendar',
   path: '/calendar',
@@ -656,6 +668,7 @@ export interface FileRoutesByFullPath {
   '/audit-logs': typeof AuthenticatedAuditLogsRoute
   '/automation': typeof AuthenticatedAutomationRoute
   '/calendar': typeof AuthenticatedCalendarRoute
+  '/cashflow': typeof AuthenticatedCashflowRoute
   '/choose-industry': typeof AuthenticatedChooseIndustryRoute
   '/companies': typeof AuthenticatedCompaniesRoute
   '/contacts': typeof AuthenticatedContactsRoute
@@ -674,6 +687,7 @@ export interface FileRoutesByFullPath {
   '/notifications': typeof AuthenticatedNotificationsRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/partner': typeof AuthenticatedPartnerRoute
+  '/payments': typeof AuthenticatedPaymentsRoute
   '/payout-history': typeof AuthenticatedPayoutHistoryRoute
   '/pipeline': typeof AuthenticatedPipelineRoute
   '/portal': typeof AuthenticatedPortalRoute
@@ -753,6 +767,7 @@ export interface FileRoutesByTo {
   '/audit-logs': typeof AuthenticatedAuditLogsRoute
   '/automation': typeof AuthenticatedAutomationRoute
   '/calendar': typeof AuthenticatedCalendarRoute
+  '/cashflow': typeof AuthenticatedCashflowRoute
   '/choose-industry': typeof AuthenticatedChooseIndustryRoute
   '/companies': typeof AuthenticatedCompaniesRoute
   '/contacts': typeof AuthenticatedContactsRoute
@@ -769,6 +784,7 @@ export interface FileRoutesByTo {
   '/notifications': typeof AuthenticatedNotificationsRoute
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/partner': typeof AuthenticatedPartnerRoute
+  '/payments': typeof AuthenticatedPaymentsRoute
   '/payout-history': typeof AuthenticatedPayoutHistoryRoute
   '/pipeline': typeof AuthenticatedPipelineRoute
   '/portal': typeof AuthenticatedPortalRoute
@@ -848,6 +864,7 @@ export interface FileRoutesById {
   '/_authenticated/audit-logs': typeof AuthenticatedAuditLogsRoute
   '/_authenticated/automation': typeof AuthenticatedAutomationRoute
   '/_authenticated/calendar': typeof AuthenticatedCalendarRoute
+  '/_authenticated/cashflow': typeof AuthenticatedCashflowRoute
   '/_authenticated/choose-industry': typeof AuthenticatedChooseIndustryRoute
   '/_authenticated/companies': typeof AuthenticatedCompaniesRoute
   '/_authenticated/contacts': typeof AuthenticatedContactsRoute
@@ -866,6 +883,7 @@ export interface FileRoutesById {
   '/_authenticated/notifications': typeof AuthenticatedNotificationsRoute
   '/_authenticated/onboarding': typeof AuthenticatedOnboardingRoute
   '/_authenticated/partner': typeof AuthenticatedPartnerRoute
+  '/_authenticated/payments': typeof AuthenticatedPaymentsRoute
   '/_authenticated/payout-history': typeof AuthenticatedPayoutHistoryRoute
   '/_authenticated/pipeline': typeof AuthenticatedPipelineRoute
   '/_authenticated/portal': typeof AuthenticatedPortalRoute
@@ -949,6 +967,7 @@ export interface FileRouteTypes {
     | '/audit-logs'
     | '/automation'
     | '/calendar'
+    | '/cashflow'
     | '/choose-industry'
     | '/companies'
     | '/contacts'
@@ -967,6 +986,7 @@ export interface FileRouteTypes {
     | '/notifications'
     | '/onboarding'
     | '/partner'
+    | '/payments'
     | '/payout-history'
     | '/pipeline'
     | '/portal'
@@ -1046,6 +1066,7 @@ export interface FileRouteTypes {
     | '/audit-logs'
     | '/automation'
     | '/calendar'
+    | '/cashflow'
     | '/choose-industry'
     | '/companies'
     | '/contacts'
@@ -1062,6 +1083,7 @@ export interface FileRouteTypes {
     | '/notifications'
     | '/onboarding'
     | '/partner'
+    | '/payments'
     | '/payout-history'
     | '/pipeline'
     | '/portal'
@@ -1140,6 +1162,7 @@ export interface FileRouteTypes {
     | '/_authenticated/audit-logs'
     | '/_authenticated/automation'
     | '/_authenticated/calendar'
+    | '/_authenticated/cashflow'
     | '/_authenticated/choose-industry'
     | '/_authenticated/companies'
     | '/_authenticated/contacts'
@@ -1158,6 +1181,7 @@ export interface FileRouteTypes {
     | '/_authenticated/notifications'
     | '/_authenticated/onboarding'
     | '/_authenticated/partner'
+    | '/_authenticated/payments'
     | '/_authenticated/payout-history'
     | '/_authenticated/pipeline'
     | '/_authenticated/portal'
@@ -1549,6 +1573,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedPayoutHistoryRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/payments': {
+      id: '/_authenticated/payments'
+      path: '/payments'
+      fullPath: '/payments'
+      preLoaderRoute: typeof AuthenticatedPaymentsRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/partner': {
       id: '/_authenticated/partner'
       path: '/partner'
@@ -1673,6 +1704,13 @@ declare module '@tanstack/react-router' {
       path: '/choose-industry'
       fullPath: '/choose-industry'
       preLoaderRoute: typeof AuthenticatedChooseIndustryRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/cashflow': {
+      id: '/_authenticated/cashflow'
+      path: '/cashflow'
+      fullPath: '/cashflow'
+      preLoaderRoute: typeof AuthenticatedCashflowRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/calendar': {
@@ -2042,6 +2080,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedAuditLogsRoute: typeof AuthenticatedAuditLogsRoute
   AuthenticatedAutomationRoute: typeof AuthenticatedAutomationRoute
   AuthenticatedCalendarRoute: typeof AuthenticatedCalendarRoute
+  AuthenticatedCashflowRoute: typeof AuthenticatedCashflowRoute
   AuthenticatedChooseIndustryRoute: typeof AuthenticatedChooseIndustryRoute
   AuthenticatedCompaniesRoute: typeof AuthenticatedCompaniesRoute
   AuthenticatedContactsRoute: typeof AuthenticatedContactsRoute
@@ -2060,6 +2099,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedNotificationsRoute: typeof AuthenticatedNotificationsRoute
   AuthenticatedOnboardingRoute: typeof AuthenticatedOnboardingRoute
   AuthenticatedPartnerRoute: typeof AuthenticatedPartnerRoute
+  AuthenticatedPaymentsRoute: typeof AuthenticatedPaymentsRoute
   AuthenticatedPayoutHistoryRoute: typeof AuthenticatedPayoutHistoryRoute
   AuthenticatedPipelineRoute: typeof AuthenticatedPipelineRoute
   AuthenticatedPortalRoute: typeof AuthenticatedPortalRoute
@@ -2094,6 +2134,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAuditLogsRoute: AuthenticatedAuditLogsRoute,
   AuthenticatedAutomationRoute: AuthenticatedAutomationRoute,
   AuthenticatedCalendarRoute: AuthenticatedCalendarRoute,
+  AuthenticatedCashflowRoute: AuthenticatedCashflowRoute,
   AuthenticatedChooseIndustryRoute: AuthenticatedChooseIndustryRoute,
   AuthenticatedCompaniesRoute: AuthenticatedCompaniesRoute,
   AuthenticatedContactsRoute: AuthenticatedContactsRoute,
@@ -2112,6 +2153,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedNotificationsRoute: AuthenticatedNotificationsRoute,
   AuthenticatedOnboardingRoute: AuthenticatedOnboardingRoute,
   AuthenticatedPartnerRoute: AuthenticatedPartnerRoute,
+  AuthenticatedPaymentsRoute: AuthenticatedPaymentsRoute,
   AuthenticatedPayoutHistoryRoute: AuthenticatedPayoutHistoryRoute,
   AuthenticatedPipelineRoute: AuthenticatedPipelineRoute,
   AuthenticatedPortalRoute: AuthenticatedPortalRoute,

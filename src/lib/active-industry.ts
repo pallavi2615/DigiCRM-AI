@@ -229,6 +229,19 @@ const ROUTE_GROUPS: Array<{
     routes: ["/industry/manufacturing"],
     group: "industrial",
   },
+
+  { routes: ["/coaching"], group: "education" },
+  { routes: ["/creator"], group: "creator" },
+  { routes: ["/brand"], group: "creator" },
+  { routes: ["/distribution"], group: "commerce" },
+  { routes: ["/buyer"], group: "commerce" },
+  { routes: ["/restaurant"], group: "hospitality" },
+  { routes: ["/student-portal"], group: "education" },
+  { routes: ["/m"], group: "commerce" },
+  { routes: ["/education-setup"], group: "education" },
+  { routes: ["/digiverify"], group: "professional-services" },
+  { routes: ["/packs"], group: "professional-services" },
+
 ];
 
 export function groupForRoute(route: string): IndustrySlug | null {

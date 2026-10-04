@@ -7,7 +7,7 @@ from decimal import Decimal
 # ============ CREATE ============
 class LeadCreate(BaseModel):
     name: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: EmailStr   
     phone: Optional[str] = None
     company: Optional[str] = None
     company_name: Optional[str] = None
@@ -19,7 +19,7 @@ class LeadCreate(BaseModel):
     message: Optional[str] = None
     source: Optional[str] = "manual"
     priority: Optional[str] = "medium"
-    value: Optional[Decimal] = Decimal("0")
+    # value: Optional[Decimal] = Decimal("0")
     estimated_value: Optional[Decimal] = Decimal("0")
     expected_close_date: Optional[date] = None
     assigned_to: Optional[int] = None
@@ -44,7 +44,7 @@ class LeadUpdate(BaseModel):
     message: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[str] = None
-    value: Optional[Decimal] = None
+    # value: Optional[Decimal] = None
     estimated_value: Optional[Decimal] = None
     expected_close_date: Optional[date] = None
     assigned_to: Optional[int] = None
@@ -78,7 +78,7 @@ class LeadResponse(BaseModel):
     source: Optional[str] = None
     status: str
     priority: str = "medium"
-    value: Decimal = Decimal("0")
+    # value: Decimal = Decimal("0")
     estimated_value: Decimal = Decimal("0")
     expected_close_date: Optional[date] = None
     assigned_to: Optional[int] = None

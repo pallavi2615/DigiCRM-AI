@@ -16,6 +16,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { supabase } from "@/integrations/supabase/client";
 import { getSeoSettings } from "@/lib/cms.functions";
+import { PermissionsProvider } from "@/contexts/PermissionsContext";
 
 function NotFoundComponent() {
   return (
@@ -157,9 +158,11 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={200}>
-        <Analytics />
-        <Outlet />
-        <Toaster richColors position="top-right" />
+        <PermissionsProvider>          {/* 👈 ADD */}
+          <Analytics />
+          <Outlet />
+          <Toaster richColors position="top-right" />
+        </PermissionsProvider>        {/* 👈 ADD */}
       </TooltipProvider>
     </QueryClientProvider>
   );
