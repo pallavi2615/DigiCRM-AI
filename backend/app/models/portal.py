@@ -33,6 +33,8 @@ class PackRecord(Base):
     deleted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    contact_phone = Column(String(50), nullable=True)    
+    notes = Column(Text, nullable=True)   
 
     __table_args__ = (
         Index("ix_pack_records_owner_email", "owner_id", "contact_email"),
@@ -64,12 +66,18 @@ class PackPayment(Base):
     amount = Column(Numeric(14, 2), nullable=False, default=0)
     currency = Column(String(10), default="INR")
     status = Column(String(50), default="pending", index=True)
+    method = Column(String(50), nullable=True)
+    reference = Column(String(255), nullable=True)
+    payer_note = Column(Text, nullable=True)
+    decision_note = Column(Text, nullable=True)
     due_date = Column(DateTime, nullable=True)
     paid_at = Column(DateTime, nullable=True)
-    reference = Column(String(255))
-    method = Column(String(50))
-    decision_note = Column(Text)
+    submitted_at = Column(DateTime, nullable=True)
+    submitted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
 
 
 class Verification(Base):

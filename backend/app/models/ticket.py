@@ -41,6 +41,7 @@ class Ticket(Base):
     priority = Column(String(20), default="medium", index=True)
     urgency = Column(String(20), default="medium")
     category = Column(String(100))
+    industry_group = Column(String(100), nullable=True, index=True)
 
     assigned_to = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))

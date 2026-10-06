@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,29 +49,33 @@ export function PortalPayDialog({
       if (!amt || amt <= 0) throw new Error("Enter the amount you paid.");
       if (reference.trim().length < 3) throw new Error("Enter the reference or UTR number from your bank.");
 
-      const patch = {
-        status: "pending_confirmation",
-        method,
-        reference: reference.trim(),
-        payer_note: note.trim() || null,
-        submitted_at: new Date(paidOn).toISOString(),
-        submitted_by: user.id,
-      };
-
       if (charge) {
-        const { error } = await supabase.from("pack_payments").update(patch as never).eq("id", charge.id);
-        if (error) throw error;
+        // Update existing charge
+        await apiFetch(`/api/v1/portal/payments/${charge.id}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            status: "pending_confirmation",
+            method,
+            reference: reference.trim(),
+            payer_note: note.trim() || null,
+            submitted_at: new Date(paidOn).toISOString(),
+          }),
+        });
       } else {
-        const { error } = await supabase.from("pack_payments").insert({
-          record_id: recordId,
-          kind: "pack_fee",
-          label: "Pack fee",
-          amount: amt,
-          currency: "INR",
-          created_by: user.id,
-          ...patch,
-        } as never);
-        if (error) throw error;
+        // Create new payment
+        await apiFetch(`/api/v1/portal/records/${recordId}/payments`, {
+          method: "POST",
+          body: JSON.stringify({
+            kind: "pack_fee",
+            label: "Pack fee",
+            amount: amt,
+            currency: "INR",
+            method,
+            reference: reference.trim(),
+            payer_note: note.trim() || null,
+            submitted_at: new Date(paidOn).toISOString(),
+          }),
+        });
       }
     },
     onSuccess: async () => {

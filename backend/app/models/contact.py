@@ -45,6 +45,7 @@ class Contact(Base):
         ForeignKey("companies.id", ondelete="SET NULL"),
         index=True,
     )
+    industry_group = Column(String(100), nullable=True, index=True)
     notes = Column(Text)
     linkedin_url = Column(String(500))
     avatar_url = Column(String(500))

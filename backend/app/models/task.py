@@ -33,6 +33,7 @@ class Task(Base):
     status = Column(String(50), default="pending", index=True)
     priority = Column(String(20), default="medium")
     due_date = Column(Date, index=True)
+    industry_group = Column(String(100), nullable=True, index=True)
     completed_at = Column(DateTime)
     assigned_to = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))

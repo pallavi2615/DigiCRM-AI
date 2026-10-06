@@ -39,6 +39,7 @@ class Company(Base):
     location = Column(String(200))
     employees = Column(Integer, default=0)
     revenue = Column(Numeric(14, 2), default=0)
+    industry_group = Column(String(100), nullable=True, index=True)
     website = Column(String(500))
     phone = Column(String(20))
     email = Column(String(255))       # ← note: no unique=True (multi-tenant)

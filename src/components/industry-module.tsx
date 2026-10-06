@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -59,110 +59,49 @@ export function IndustryModule({
 
 type Row = Record<string, unknown>;
 
+
 async function loadModule(module: IndustryModuleKey, group: string, industryName: string): Promise<Row[]> {
-  const packRecordIds = async () => {
-    const { data, error } = await supabase
-      .from("pack_records")
-      .select("id, title")
-      .eq("group_slug", group)
-      .is("deleted_at", null)
-      .limit(500);
-    if (error) throw error;
-    return data ?? [];
-  };
+  const q = `industry_group=${encodeURIComponent(group)}`;
 
   switch (module) {
     case "leads":
     case "pipeline":
     case "reports": {
-      const { data, error } = await supabase
-        .from("leads")
-        .select("id, company_name, contact_person, email, phone, status, priority, estimated_value, created_at")
-        .eq("industry", industryName)
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false })
-        .limit(500);
-      if (error) throw error;
-      return data ?? [];
+      const res = await apiFetch<Row[]>(`/api/v1/leads?limit=500`).catch(() => []);
+      return Array.isArray(res) ? res : [];
     }
     case "contacts": {
-      const { data, error } = await supabase
-        .from("contacts")
-        .select("id, first_name, last_name, email, phone, designation, created_at")
-        .eq("industry_group", group)
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false })
-        .limit(300);
-      if (error) throw error;
-      return data ?? [];
+      const res = await apiFetch<Row[]>(`/api/v1/contacts?limit=300&${q}`).catch(() => []);
+      return Array.isArray(res) ? res : [];
     }
     case "companies": {
-      const { data, error } = await supabase
-        .from("companies")
-        .select("id, name, city, phone, email, website, created_at")
-        .eq("industry_group", group)
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false })
-        .limit(300);
-      if (error) throw error;
-      return data ?? [];
+      const res = await apiFetch<Row[]>(`/api/v1/companies?limit=300&${q}`).catch(() => []);
+      return Array.isArray(res) ? res : [];
     }
     case "tasks": {
-      const { data, error } = await supabase
-        .from("tasks")
-        .select("id, title, status, priority, due_date, created_at")
-        .eq("industry_group", group)
-        .order("created_at", { ascending: false })
-        .limit(300);
-      if (error) throw error;
-      return data ?? [];
+      const res = await apiFetch<Row[]>(`/api/v1/tasks?limit=300&${q}`).catch(() => []);
+      return Array.isArray(res) ? res : [];
     }
     case "meetings":
     case "calendar": {
-      const { data, error } = await supabase
-        .from("meetings")
-        .select("id, title, status, starts_at, ends_at, location")
-        .eq("industry_group", group)
-        .order("starts_at", { ascending: false })
-        .limit(300);
-      if (error) throw error;
-      return data ?? [];
+      const res = await apiFetch<Row[]>(`/api/v1/meetings?limit=300&${q}`).catch(() => []);
+      return Array.isArray(res) ? res : [];
     }
     case "tickets": {
-      const { data, error } = await supabase
-        .from("support_tickets")
-        .select("id, ticket_number, subject, status, priority, requester_name, created_at")
-        .eq("industry_group", group)
-        .order("created_at", { ascending: false })
-        .limit(300);
-      if (error) throw error;
-      return data ?? [];
+      const res = await apiFetch<Row[]>(`/api/v1/tickets?limit=300&${q}`).catch(() => []);
+      return Array.isArray(res) ? res : [];
     }
     case "documents": {
-      const recs = await packRecordIds();
-      if (!recs.length) return [];
-      const titles = new Map(recs.map((r) => [r.id as string, r.title as string]));
-      const { data, error } = await supabase
-        .from("pack_documents")
-        .select("id, record_id, name, doc_type, status, created_at")
-        .in("record_id", recs.map((r) => r.id as string))
-        .order("created_at", { ascending: false })
-        .limit(300);
-      if (error) throw error;
-      return (data ?? []).map((d) => ({ ...d, record_title: titles.get(d.record_id as string) ?? "—" }));
+      const res = await apiFetch<Row[]>(
+        `/api/v1/portal/documents?group_slug=${encodeURIComponent(group)}&limit=300`
+      ).catch(() => []);
+      return Array.isArray(res) ? res : [];
     }
     case "payments": {
-      const recs = await packRecordIds();
-      if (!recs.length) return [];
-      const titles = new Map(recs.map((r) => [r.id as string, r.title as string]));
-      const { data, error } = await supabase
-        .from("pack_payments")
-        .select("id, record_id, label, kind, amount, status, method, due_date, paid_at, reference")
-        .in("record_id", recs.map((r) => r.id as string))
-        .order("due_date", { ascending: false })
-        .limit(300);
-      if (error) throw error;
-      return (data ?? []).map((p) => ({ ...p, record_title: titles.get(p.record_id as string) ?? "—" }));
+      const res = await apiFetch<Row[]>(
+        `/api/v1/portal/payments-all?group_slug=${encodeURIComponent(group)}&limit=300`
+      ).catch(() => []);
+      return Array.isArray(res) ? res : [];
     }
   }
 }

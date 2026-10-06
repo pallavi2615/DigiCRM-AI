@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { useActiveTenant } from "@/lib/queries/tenants";
 import { useAllPacks } from "@/lib/pack-config";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,32 +57,23 @@ function TenantBilling() {
     enabled: !!tenantId,
     queryFn: async () => {
       const [recordsRes, leadsRes, settingsRes] = await Promise.all([
-        supabase
-          .from("pack_records")
-          .select("id, group_slug, pack_slug, stage, value, won, created_at")
-          .eq("tenant_id", String(tenantId)),
-        supabase
-          .from("leads")
-          .select("id, status, estimated_value")
-          .eq("tenant_id", String(tenantId))
-          .is("deleted_at", null),
-        supabase.from("affiliate_settings").select("default_commission_pct").limit(1).maybeSingle(),
+        apiFetch<any[]>("/api/v1/portal/records?limit=500").catch(() => []),
+        apiFetch<any[]>("/api/v1/leads?limit=500").catch(() => []),
+        apiFetch<any>("/api/v1/lead-sources/affiliates/settings").catch(() => null),
       ]);
-      const records = recordsRes.data ?? [];
-      const ids = records.map((r) => r.id);
-      let payments: { amount: number; status: string; record_id: string; label: string; paid_at: string | null }[] = [];
-      if (ids.length) {
-        const { data: pay } = await supabase
-          .from("pack_payments")
-          .select("amount, status, record_id, label, paid_at")
-          .in("record_id", ids);
-        payments = pay ?? [];
-      }
+
+      const records = Array.isArray(recordsRes) ? recordsRes : [];
+      const leads = Array.isArray(leadsRes) ? leadsRes : [];
+      const ids = records.map((r: any) => r.id);
+
+      // Payments — skip for now (pack_payments table missing)
+      const payments: any[] = [];
+
       return {
         records,
-        leads: leadsRes.data ?? [],
+        leads,
         payments,
-        commissionPct: Number(settingsRes.data?.default_commission_pct ?? 20),
+        commissionPct: Number(settingsRes?.default_commission_pct ?? 20),
       };
     },
   });

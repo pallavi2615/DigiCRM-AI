@@ -18,8 +18,11 @@ from app.core.constants import SUPER_ADMIN_ROLE as SA_CONST
 from app.models.user import User
 from app.models.portal import PackRecord, PackDocument, PackPayment, Verification
 from app.schemas.portal import (
+    PackRecordCreate,
     PackRecordResponse,
     PackDocumentResponse,
+    PackPaymentCreate, 
+    PackPaymentUpdate,
     PackPaymentResponse,
     VerificationResponse,
     PaymentMarkPaid,
@@ -88,6 +91,34 @@ def list_records(
     rows = query.order_by(desc(PackRecord.created_at)).limit(limit).all()
     return [PackRecordResponse.model_validate(r) for r in rows]
 
+
+@router.post("/records", response_model=PackRecordResponse, status_code=201)
+def create_record(
+    payload: PackRecordCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new application/deal in the portal."""
+    if user.role != SA_CONST and not user.tenant_id:
+        raise HTTPException(400, "User has no tenant")
+
+    record = PackRecord(
+        tenant_id=user.tenant_id,
+        group_slug=payload.group_slug,
+        pack_slug=payload.pack_slug,
+        title=payload.title,
+        stage=payload.stage or "New",
+        value=payload.value or 0,
+        contact_name=payload.contact_name,
+        contact_email=payload.contact_email,
+        city=payload.city,
+        owner_id=user.id,
+        won=False,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return PackRecordResponse.model_validate(record)
 
 @router.get("/records/{record_id}", response_model=PackRecordResponse)
 def get_record(
@@ -241,3 +272,132 @@ def list_verifications(
         .all()
     )
     return [VerificationResponse.model_validate(v) for v in rows]
+
+@router.post(
+    "/records/{record_id}/payments",
+    response_model=PackPaymentResponse,
+    status_code=201,
+)
+def create_payment(
+    record_id: str,
+    payload: PackPaymentCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Client records a payment they made for this record."""
+    record = _records_query_for_user(db, user).filter(PackRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(404, "Record not found")
+
+    payment = PackPayment(
+        record_id=record.id,
+        kind=payload.kind,
+        label=payload.label,
+        amount=payload.amount,
+        currency=payload.currency or "INR",
+        method=payload.method,
+        reference=payload.reference,
+        payer_note=payload.payer_note,
+        status="pending_confirmation",
+        submitted_at=payload.submitted_at or datetime.utcnow(),
+        submitted_by=user.id,
+        created_by=user.id,
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+    return PackPaymentResponse.model_validate(payment)
+
+
+@router.put("/payments/{payment_id}", response_model=PackPaymentResponse)
+def update_payment(
+    payment_id: str,
+    payload: PackPaymentUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update a payment (client marking as paid, admin confirming, etc.)."""
+    payment = db.query(PackPayment).filter(PackPayment.id == payment_id).first()
+    if not payment:
+        raise HTTPException(404, "Payment not found")
+
+    # Verify access via record
+    record = _records_query_for_user(db, user).filter(PackRecord.id == payment.record_id).first()
+    if not record:
+        raise HTTPException(403, "Not allowed")
+
+    data = payload.model_dump(exclude_unset=True)
+
+    # Auto-set paid_at when status = paid
+    if data.get("status") == "paid" and not payment.paid_at:
+        data["paid_at"] = datetime.utcnow()
+
+    for k, v in data.items():
+        setattr(payment, k, v)
+
+    db.commit()
+    db.refresh(payment)
+    return PackPaymentResponse.model_validate(payment)
+
+
+# ═══════════════════════════════════════════════════════
+# BULK LISTS — for industry module
+# ⚠️ MUST be before dynamic routes
+# ═══════════════════════════════════════════════════════
+
+@router.get("/documents", response_model=List[PackDocumentResponse])
+def list_all_documents(
+    group_slug: Optional[str] = None,
+    pack_slug: Optional[str] = None,
+    limit: int = Query(300, ge=1, le=1000),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all documents across the user's accessible records."""
+    record_query = _records_query_for_user(db, user)
+    if group_slug:
+        record_query = record_query.filter(PackRecord.group_slug == group_slug)
+    if pack_slug:
+        record_query = record_query.filter(PackRecord.pack_slug == pack_slug)
+
+    record_ids = [r.id for r in record_query.limit(500).all()]
+    if not record_ids:
+        return []
+
+    docs = (
+        db.query(PackDocument)
+        .filter(PackDocument.record_id.in_(record_ids))
+        .order_by(desc(PackDocument.created_at))
+        .limit(limit)
+        .all()
+    )
+    return [PackDocumentResponse.model_validate(d) for d in docs]
+
+
+@router.get("/payments-all", response_model=List[PackPaymentResponse])
+def list_all_payments(
+    group_slug: Optional[str] = None,
+    pack_slug: Optional[str] = None,
+    limit: int = Query(300, ge=1, le=1000),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all payments across the user's accessible records."""
+    record_query = _records_query_for_user(db, user)
+    if group_slug:
+        record_query = record_query.filter(PackRecord.group_slug == group_slug)
+    if pack_slug:
+        record_query = record_query.filter(PackRecord.pack_slug == pack_slug)
+
+    record_ids = [r.id for r in record_query.limit(500).all()]
+    if not record_ids:
+        return []
+
+    payments = (
+        db.query(PackPayment)
+        .filter(PackPayment.record_id.in_(record_ids))
+        .order_by(desc(PackPayment.due_date))
+        .limit(limit)
+        .all()
+    )
+    return [PackPaymentResponse.model_validate(p) for p in payments]

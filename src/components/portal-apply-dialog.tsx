@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import type { IndustryPack } from "@/lib/industry-packs";
 import { Button } from "@/components/ui/button";
@@ -35,21 +35,21 @@ export function PortalApplyDialog({ packs }: { packs: IndustryPack[] }) {
       if (!pack) throw new Error("Choose what you are applying for.");
       if (title.trim().length < 3) throw new Error("Give your application a short title.");
 
-      const { error } = await supabase.from("pack_records").insert({
-        group_slug: pack.group,
-        pack_slug: pack.slug,
-        title: title.trim(),
-        stage: pack.stages[0] ?? "New",
-        value: value ? Number(value) : null,
-        contact_name: name.trim() || null,
-        contact_email: user.email ?? null,
-        contact_phone: phone.trim() || null,
-        city: city.trim() || null,
-        notes: notes.trim() || null,
-        owner_id: user.id,
-        created_by: user.id,
-      } as never);
-      if (error) throw error;
+      await apiFetch("/api/v1/portal/records", {
+        method: "POST",
+        body: JSON.stringify({
+          group_slug: pack.group,
+          pack_slug: pack.slug,
+          title: title.trim(),
+          stage: pack.stages[0] ?? "New",
+          value: value ? Number(value) : 0,
+          contact_name: name.trim() || null,
+          contact_email: user.email ?? null,
+          contact_phone: phone.trim() || null,
+          city: city.trim() || null,
+          notes: notes.trim() || null,
+        }),
+      });
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["portal-records"] });

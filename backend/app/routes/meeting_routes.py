@@ -28,6 +28,7 @@ def _apply_tenant_filter(query, user: User):
 @router.get("", response_model=List[MeetingResponse])
 def list_meetings(
     status: Optional[str] = None,
+    industry_group: Optional[str] = None,
     lead_id: Optional[int] = None,
     today: Optional[bool] = False,
     upcoming: Optional[bool] = False,
@@ -39,6 +40,8 @@ def list_meetings(
     query = _apply_tenant_filter(db.query(Meeting), user)
     if status:
         query = query.filter(Meeting.status == status)
+    if industry_group:
+        query = query.filter(Meeting.industry_group == industry_group)
     if lead_id:
         query = query.filter(Meeting.lead_id == lead_id)
     if today:

@@ -60,6 +60,7 @@ def list_contacts(
     search: Optional[str] = None,
     company_id: Optional[int] = None,
     status: Optional[str] = None,
+    industry_group: Optional[str] = None, 
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     user: User = Depends(require_feature_permission("contacts", "view")),
@@ -70,6 +71,8 @@ def list_contacts(
         query = query.filter(Contact.company_id == company_id)
     if status:
         query = query.filter(Contact.status == status)
+    if industry_group:
+        query = query.filter(Contact.industry_group == industry_group)
     if search:
         pattern = f"%{search}%"
         query = query.filter(

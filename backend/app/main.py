@@ -46,6 +46,7 @@ from app.routes import cashflow_routes
 from app.routes import payment_routes 
 from app.routes import portal_routes
 from app.routes import lead_source_routes
+from app.routes import pack_routes
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -104,6 +105,7 @@ app.include_router(cashflow_routes.router, prefix=settings.API_V1_PREFIX,)
 app.include_router(payment_routes.router, prefix=settings.API_V1_PREFIX,) 
 app.include_router(portal_routes.router, prefix=settings.API_V1_PREFIX)
 app.include_router(lead_source_routes.router, prefix=settings.API_V1_PREFIX)
+app.include_router(pack_routes.router, prefix=settings.API_V1_PREFIX)
 
 # Public webhook (no /api/v1 prefix)
 app.include_router(webhook_routes.router)                    

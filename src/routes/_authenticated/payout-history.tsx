@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { RoleGuard, ADMINS } from "@/components/role-guard";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -64,18 +64,32 @@ function PayoutHistoryPage() {
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ["payout-history"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("affiliate_payout_requests")
-        .select(
-          "id, amount, method, status, notes, decision_reason, reference, created_at, approved_at, paid_at, processed_at, affiliate_id, affiliates(name, email, referral_code), tenants(name)",
-        )
-        .order("created_at", { ascending: false })
-        .limit(500);
-      if (error) throw error;
-      return (data ?? []) as unknown as Row[];
+      const res = await apiFetch<any[]>("/api/v1/lead-sources/affiliates/payouts");
+      const list = Array.isArray(res) ? res : [];
+      // Map to the shape this page expects
+      return list.map((r: any) => ({
+        id: r.id,
+        amount: r.amount,
+        method: r.method ?? "bank_transfer",
+        status: r.status,
+        notes: r.notes,
+        decision_reason: r.decision_reason,
+        reference: r.reference,
+        created_at: r.created_at,
+        approved_at: r.approved_at,
+        paid_at: r.paid_at,
+        processed_at: r.processed_at,
+        affiliate_id: r.affiliate_id,
+        affiliates: {
+          name: r.affiliate_name ?? "Partner",
+          email: r.affiliate_email ?? "",
+          referral_code: r.referral_code ?? null,
+        },
+        tenants: r.tenant_name ? { name: r.tenant_name } : null,
+      })) as Row[];
     },
   });
-
+  
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {

@@ -71,6 +71,7 @@ def _enrich_task(db: Session, task: Task) -> dict:
 @router.get("", response_model=List[TaskResponse])
 def list_tasks(
     status: Optional[str] = None,
+    industry_group: Optional[str] = None,
     priority: Optional[str] = None,
     assigned_to: Optional[int] = None,
     lead_id: Optional[int] = None,
@@ -85,6 +86,8 @@ def list_tasks(
 
     if status:
         query = query.filter(Task.status == status)
+    if industry_group:
+        query = query.filter(Task.industry_group == industry_group)
     if priority:
         query = query.filter(Task.priority == priority)
     if assigned_to:

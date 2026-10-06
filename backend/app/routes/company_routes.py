@@ -64,6 +64,7 @@ def company_stats(
 def list_companies(
     search: Optional[str] = None,
     industry: Optional[str] = None,
+    industry_group: Optional[str] = None,
     status: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
@@ -75,6 +76,8 @@ def list_companies(
         query = query.filter(Company.industry == industry)
     if status:
         query = query.filter(Company.status == status)
+    if industry_group:
+        query = query.filter(Company.industry_group == industry_group)
     if search:
         pattern = f"%{search}%"
         query = query.filter(

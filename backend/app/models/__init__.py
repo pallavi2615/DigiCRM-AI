@@ -28,6 +28,7 @@ from app.models.role_change_history import RoleChangeHistory
 from app.models.cashflow import CashflowEntry
 from app.models.payment import PaymentEntry, BankAccount
 from app.models.lead_source import LeadChannel, LeadCampaign, LeadConversion, Affiliate
+from app.models.pack import PackConfig
 
 __all__ = [
     "Tenant",
@@ -67,4 +68,5 @@ __all__ = [
     "LeadCampaign", 
     "LeadConversion",
     "Affiliate",
+    "PackConfig",
 ]

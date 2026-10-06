@@ -34,6 +34,7 @@ class Meeting(Base):
     scheduled_at = Column(DateTime, nullable=False, index=True)
     duration_minutes = Column(Integer, default=30)
     status = Column(String(50), default="scheduled", index=True)
+    industry_group = Column(String(100), nullable=True, index=True)
     meeting_type = Column(String(50), default="video")
     location = Column(String(255))
     meeting_link = Column(String(500))

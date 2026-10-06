@@ -137,6 +137,7 @@ def _run_sla_check_on_list(db: Session, tickets: List[Ticket]) -> None:
 @router.get("", response_model=List[TicketResponse])
 def list_tickets(
     status: Optional[str] = None,
+    industry_group: Optional[str] = None,
     priority: Optional[str] = None,
     urgency: Optional[str] = None,
     assigned_to: Optional[int] = None,
@@ -151,6 +152,8 @@ def list_tickets(
 
     if status:
         query = query.filter(Ticket.status == status)
+    if industry_group:
+        query = query.filter(Ticket.industry_group == industry_group)
     if priority:
         query = query.filter(Ticket.priority == priority)
     if urgency:

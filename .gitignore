@@ -32,3 +32,4 @@ dist-ssr
 *.sw?
 .env
 backend_old/
+backend_old/
