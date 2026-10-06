@@ -58,6 +58,15 @@ export const PermissionsProvider = ({ children }: { children: ReactNode }) => {
 
       const data = await res.json();
 
+      console.log("🟢 PERMISSIONS API RESPONSE:", {
+        role: data.role,
+        roles: data.roles,
+        permissionsKeys: Object.keys(data.permissions || {}),
+        paymentsValue: data.permissions?.payments,
+      });
+
+
+
       // 👇 Backend `role` (string) ya `roles` (array) — dono handle karo
       const rolesArr: string[] = Array.isArray(data.roles)
         ? data.roles
@@ -76,6 +85,7 @@ export const PermissionsProvider = ({ children }: { children: ReactNode }) => {
   };
 
   useEffect(() => {
+    console.log("🟡 PermissionsProvider MOUNTED — calling refresh()");
     void refresh();
   }, []);
 

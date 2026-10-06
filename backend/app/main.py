@@ -44,7 +44,8 @@ from app.routes import it_pipeline_routes
 from app.routes import role_change_routes
 from app.routes import cashflow_routes
 from app.routes import payment_routes 
-
+from app.routes import portal_routes
+from app.routes import lead_source_routes
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -101,6 +102,8 @@ app.include_router(it_pipeline_routes.router, prefix=settings.API_V1_PREFIX,)
 app.include_router(role_change_routes.router, prefix=settings.API_V1_PREFIX,)
 app.include_router(cashflow_routes.router, prefix=settings.API_V1_PREFIX,)
 app.include_router(payment_routes.router, prefix=settings.API_V1_PREFIX,) 
+app.include_router(portal_routes.router, prefix=settings.API_V1_PREFIX)
+app.include_router(lead_source_routes.router, prefix=settings.API_V1_PREFIX)
 
 # Public webhook (no /api/v1 prefix)
 app.include_router(webhook_routes.router)                    

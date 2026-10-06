@@ -27,6 +27,7 @@ from app.models.it_ticket import ITTicket
 from app.models.role_change_history import RoleChangeHistory
 from app.models.cashflow import CashflowEntry
 from app.models.payment import PaymentEntry, BankAccount
+from app.models.lead_source import LeadChannel, LeadCampaign, LeadConversion, Affiliate
 
 __all__ = [
     "Tenant",
@@ -62,4 +63,8 @@ __all__ = [
     "CashflowEntry",
     "PaymentEntry",
     "BankAccount",
+    "LeadChannel", 
+    "LeadCampaign", 
+    "LeadConversion",
+    "Affiliate",
 ]

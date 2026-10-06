@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { useIndustryAccess } from "@/lib/industry-access";
 import { INDUSTRY_PACKS } from "@/lib/industry-packs";
@@ -57,26 +57,22 @@ function LeadSourcesPage() {
   const { data: channels = [] } = useQuery({
     queryKey: ["lead-channels"],
     queryFn: async () => {
-      const { data, error } = await supabase.from("lead_channels").select("*").order("name");
-      if (error) throw error;
-      return data as unknown as Channel[];
+      const res = await apiFetch<Channel[]>("/api/v1/lead-sources/channels");
+      return Array.isArray(res) ? res : [];
     },
   });
   const { data: campaigns = [] } = useQuery({
     queryKey: ["lead-campaigns"],
     queryFn: async () => {
-      const { data, error } = await supabase.from("lead_campaigns").select("*").order("created_at", { ascending: false });
-      if (error) throw error;
-      return data as unknown as Campaign[];
+      const res = await apiFetch<Campaign[]>("/api/v1/lead-sources/campaigns");
+      return Array.isArray(res) ? res : [];
     },
   });
   const { data: conversions = [] } = useQuery({
     queryKey: ["lead-conversions"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("lead_conversions").select("*").order("occurred_at", { ascending: false }).limit(2000);
-      if (error) throw error;
-      return data as unknown as Conversion[];
+      const res = await apiFetch<Conversion[]>("/api/v1/lead-sources/conversions?limit=2000");
+      return Array.isArray(res) ? res : [];
     },
   });
 
@@ -287,13 +283,17 @@ function NewChannelDialog({ onDone }: { onDone: () => void }) {
   const save = useMutation({
     mutationFn: async () => {
       const slug = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-      const { error } = await supabase.from("lead_channels").insert({
-        name, slug, kind,
-        default_group_slug: group === "none" ? null : group,
-        default_pack_slug: pack === "none" ? null : pack,
-        monthly_cost: Number(cost) || 0,
-      } as never);
-      if (error) throw error;
+      await apiFetch("/api/v1/lead-sources/channels", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          slug,
+          kind,
+          default_group_slug: group === "none" ? null : group,
+          default_pack_slug: pack === "none" ? null : pack,
+          monthly_cost: Number(cost) || 0,
+        }),
+      });
     },
     onSuccess: () => { toast.success("Channel added"); setOpen(false); setName(""); onDone(); },
     onError: (e: Error) => toast.error(e.message),
@@ -354,10 +354,14 @@ function NewCampaignDialog({ channels, onDone }: { channels: Channel[]; onDone: 
   const save = useMutation({
     mutationFn: async () => {
       const code = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-      const { error } = await supabase.from("lead_campaigns").insert({
-        name, code, channel_id: channelId || null, budget: Number(budget) || 0,
-      } as never);
-      if (error) throw error;
+      await apiFetch("/api/v1/lead-sources/campaigns", {
+        method: "POST",
+        body: JSON.stringify({
+          name, code,
+          channel_id: channelId || null,
+          budget: Number(budget) || 0,
+        }),    // 👈 yahan `as never` aur `if (error)` nahi hona chahiye
+      });
     },
     onSuccess: () => { toast.success("Campaign added"); setOpen(false); setName(""); onDone(); },
     onError: (e: Error) => toast.error(e.message),

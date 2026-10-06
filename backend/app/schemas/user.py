@@ -82,3 +82,12 @@ class UserInviteResponse(BaseModel):
     temp_password: Optional[str] = None
     email_sent: bool
     email_error: Optional[str] = None
+
+class UserLiteResponse(BaseModel):
+    id: int
+    full_name: Optional[str] = None
+    email: str
+    role: str
+    
+    class Config:
+        from_attributes = True

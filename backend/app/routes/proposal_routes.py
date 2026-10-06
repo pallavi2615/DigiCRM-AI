@@ -44,6 +44,8 @@ SUPER_ADMIN_ROLE = "super_admin"
 def apply_tenant_filter(query, user: User):
     if user.role != SA_CONST:
         query = query.filter(Proposal.tenant_id == user.tenant_id)
+    if user.role in ("sales_executive", "executive"):
+        query = query.filter(Proposal.created_by == user.id)
     return query
 
 

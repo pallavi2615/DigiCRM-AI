@@ -23,9 +23,17 @@ function PaymentsPage() {
   const queryClient = useQueryClient();
   const { permissions, loading: permsLoading } = usePermissions();
 
+  console.log("🔵 PAYMENTS PAGE DEBUG:", {
+    permsLoading,
+    permissions,
+    paymentsKey: permissions.payments,
+    canView: permissions.payments?.includes("view"),
+  });
+
   const canView = permissions.payments?.includes("view") ?? false;
   const canCreate = permissions.payments?.includes("create") ?? false;
   const canEdit = permissions.payments?.includes("edit") ?? false;
+  
 
   // ✅ Saare hooks pehle
   const { data: stats } = useQuery({

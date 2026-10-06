@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AffiliateSettingsCard } from "@/components/affiliate-settings-card";
 import { AffiliatePayoutQueue } from "@/components/affiliate-payout-queue";
 
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { useState, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -54,7 +54,7 @@ function AffiliatesAdmin() {
   const { isAdmin } = useAuth();
   const qc = useQueryClient();
 
-  useRealtimeTable("affiliates", [["affiliates-admin"]]);
+  // useRealtimeTable("affiliates", [["affiliates-admin"]]);
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -63,12 +63,8 @@ function AffiliatesAdmin() {
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ["affiliates-admin"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("affiliates")
-        .select("id, name, email, company, audience, status, commission_pct, referral_code, notes, approved_at, created_at")
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as Affiliate[];
+      const res = await apiFetch<Affiliate[]>("/api/v1/lead-sources/affiliates");
+      return Array.isArray(res) ? res : [];
     },
     enabled: isAdmin,
   });
@@ -88,21 +84,17 @@ function AffiliatesAdmin() {
   }, [rows, search, statusFilter]);
 
   const update = useMutation({
-    mutationFn: async (v: { id: string; status?: string; commission_pct?: number; referral_code?: string | null; notes?: string | null; name?: string; email?: string }) => {
-      const patch: {
-        status?: string; commission_pct?: number; referral_code?: string | null;
-        notes?: string | null; approved_at?: string;
-      } = {};
+    mutationFn: async (v: { id: string; status?: string; commission_pct?: number; referral_code?: string | null; notes?: string | null }) => {
+      const patch: any = {};
       if (v.status !== undefined) patch.status = v.status;
       if (v.commission_pct !== undefined) patch.commission_pct = v.commission_pct;
       if (v.referral_code !== undefined) patch.referral_code = v.referral_code;
       if (v.notes !== undefined) patch.notes = v.notes;
-      if (v.status === "approved") {
-        patch.approved_at = new Date().toISOString();
-        if (!v.referral_code) patch.referral_code = suggestCode(v.name || v.email || "REF");
-      }
-      const { error } = await supabase.from("affiliates").update(patch).eq("id", v.id);
-      if (error) throw error;
+
+      await apiFetch(`/api/v1/lead-sources/affiliates/${v.id}`, {
+        method: "PUT",
+        body: JSON.stringify(patch),
+      });
     },
     onSuccess: () => {
       toast.success("Saved");
@@ -114,8 +106,7 @@ function AffiliatesAdmin() {
 
   const del = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from("affiliates").delete().eq("id", id);
-      if (error) throw error;
+      await apiFetch(`/api/v1/lead-sources/affiliates/${id}`, { method: "DELETE" });
     },
     onSuccess: () => { toast.success("Deleted"); qc.invalidateQueries({ queryKey: ["affiliates-admin"] }); },
     onError: (e: Error) => toast.error(e.message),
@@ -237,7 +228,7 @@ function AffiliatesAdmin() {
                     <TableCell>
                       <div className="flex gap-1">
                         {r.status !== "approved" && (
-                          <Button size="sm" variant="outline" onClick={() => update.mutate({ id: r.id, status: "approved", name: r.name, email: r.email, referral_code: r.referral_code })}>
+                          <Button size="sm" variant="outline" onClick={() => update.mutate({ id: r.id, status: "approved" })}>
                             <Check className="h-3.5 w-3.5" />
                           </Button>
                         )}

@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch, apiUpload } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -57,19 +57,11 @@ function Portal() {
   const [selected, setSelected] = useState<string | null>(null);
 
   const { data: records = [], isLoading } = useQuery({
-    queryKey: ["portal-records", user?.id, user?.email],
+    queryKey: ["portal-records"],
     enabled: !!user,
     queryFn: async () => {
-      const email = user?.email ?? "";
-      const { data, error } = await supabase
-        .from("pack_records")
-        .select("id, group_slug, pack_slug, title, stage, value, contact_name, contact_email, city, owner_id, created_at, won")
-        .is("deleted_at", null)
-        .or(`owner_id.eq.${user!.id}${email ? `,contact_email.eq.${email}` : ""}`)
-        .order("created_at", { ascending: false })
-        .limit(200);
-      if (error) throw error;
-      return (data ?? []) as Rec[];
+      const res = await apiFetch<Rec[]>("/api/v1/portal/records?limit=200");
+      return Array.isArray(res) ? res : [];
     },
   });
 
@@ -88,13 +80,10 @@ function Portal() {
     queryKey: ["portal-docs", current?.id],
     enabled: !!current,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("pack_documents")
-        .select("id, record_id, name, doc_type, status, created_at")
-        .eq("record_id", current!.id)
-        .order("created_at");
-      if (error) throw error;
-      return (data ?? []) as Doc[];
+      const res = await apiFetch<Doc[]>(
+        `/api/v1/portal/records/${current!.id}/documents`
+      );
+      return Array.isArray(res) ? res : [];
     },
   });
 
@@ -102,13 +91,10 @@ function Portal() {
     queryKey: ["portal-payments", current?.id],
     enabled: !!current,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("pack_payments")
-        .select("id, record_id, kind, label, amount, currency, status, due_date, paid_at, reference, method, decision_note")
-        .eq("record_id", current!.id)
-        .order("due_date");
-      if (error) throw error;
-      return (data ?? []) as Pay[];
+      const res = await apiFetch<Pay[]>(
+        `/api/v1/portal/records/${current!.id}/payments`
+      );
+      return Array.isArray(res) ? res : [];
     },
   });
 
@@ -116,13 +102,10 @@ function Portal() {
     queryKey: ["portal-verifications", current?.id],
     enabled: !!current,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("verifications")
-        .select("id, kind, status, provider, score, identifier_masked, subject_name, created_at, error")
-        .eq("record_id", current!.id)
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as Ver[];
+      const res = await apiFetch<Ver[]>(
+        `/api/v1/portal/records/${current!.id}/verifications`
+      );
+      return Array.isArray(res) ? res : [];
     },
   });
 
@@ -133,18 +116,14 @@ function Portal() {
     if (!current || !user) return;
     setUploading(true);
     try {
-      const path = `pack_records/${current.id}/${Date.now()}-${file.name.replace(/[^\w.-]/g, "_")}`;
-      const { error: upErr } = await supabase.storage.from("attachments").upload(path, file);
-      if (upErr) throw upErr;
-      const { error } = await supabase.from("pack_documents").insert({
-        record_id: current.id,
-        name: file.name,
-        doc_type: "other",
-        status: "uploaded",
-        storage_path: path,
-        uploaded_by: user.id,
-      } as never);
-      if (error) throw error;
+      const formData = new FormData();
+      formData.append("file", file);
+
+      await apiUpload(
+        `/api/v1/portal/records/${current.id}/documents`,
+        formData
+      );
+
       toast.success("Document uploaded");
       qc.invalidateQueries({ queryKey: ["portal-docs", current.id] });
     } catch (e) {

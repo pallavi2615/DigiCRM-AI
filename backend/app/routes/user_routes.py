@@ -51,6 +51,7 @@ from app.schemas.user import (
     TeamMemberResponse,
     UserInviteRequest,
     UserInviteResponse,
+    UserLiteResponse,
 )
 from app.models.role_change_history import RoleChangeHistory
 
@@ -362,6 +363,25 @@ def list_team_members(
 
     return [TeamMemberResponse.model_validate(m) for m in members]
 
+
+@router.get("/assignees", response_model=List[UserLiteResponse])
+def list_assignees(
+    user: User = Depends(get_current_user),   # 👈 koi role check nahi
+    db: Session = Depends(get_db),
+):
+    """
+    List users who can be assigned to leads.
+    Minimal fields — id, name, email, role — safe for all authenticated users.
+    """
+    query = db.query(User).filter(User.status == "active")
+
+    if user.role != SA_CONST:
+        if not user.tenant_id:
+            raise HTTPException(400, "User has no tenant")
+        query = query.filter(User.tenant_id == user.tenant_id)
+
+    members = query.order_by(User.full_name).all()
+    return [UserLiteResponse.model_validate(m) for m in members]
 
 # ============================================================
 # GET SINGLE USER

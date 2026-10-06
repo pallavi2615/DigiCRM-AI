@@ -86,6 +86,8 @@ def get_pipeline(
     query = db.query(Lead)
     if not is_superadmin:
         query = query.filter(Lead.tenant_id == user.tenant_id)
+    if user.role in ("sales_executive", "executive"):
+        query = query.filter(Lead.assigned_to == user.id)
 
     if priority:
         query = query.filter(Lead.priority == priority)
@@ -195,6 +197,8 @@ def get_pipeline_stats(
     query = db.query(Lead)
     if not is_superadmin:
         query = query.filter(Lead.tenant_id == user.tenant_id)
+    if user.role in ("sales_executive", "executive"):
+        query = query.filter(Lead.assigned_to == user.id)
     leads = query.all()
 
     by_stage = {}
@@ -244,6 +248,9 @@ def move_deal_to_stage(
     query = db.query(Lead).filter(Lead.id == lead_id)
     if not is_superadmin:
         query = query.filter(Lead.tenant_id == user.tenant_id)
+
+    if user.role in ("sales_executive", "executive"):
+        query = query.filter(Lead.assigned_to == user.id)
 
     lead = query.first()
     if not lead:

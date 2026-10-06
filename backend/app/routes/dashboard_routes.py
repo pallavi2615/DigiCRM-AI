@@ -12,7 +12,7 @@ from app.models.lead import Lead
 from app.models.proposal import Proposal
 from app.models.audit_log import AuditLog
 from app.models.task import Task
-
+from dateutil.relativedelta import relativedelta 
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
@@ -23,6 +23,11 @@ def _apply_tenant_filter(query, model, user: User):
     """Apply role-based tenant filtering. SuperAdmin → no filter."""
     if user.role != SUPER_ADMIN_ROLE:
         query = query.filter(model.tenant_id == user.tenant_id)
+
+    if user.role in ("sales_executive", "executive"):
+        # Check karo model mein `assigned_to` hai ya nahi
+        if hasattr(model, "assigned_to"):
+            query = query.filter(model.assigned_to == user.id)
     return query
 
 
@@ -126,22 +131,70 @@ def get_dashboard_stats(
 # REVENUE CHART (Monthly)
 # ============================================================
 
+# @router.get("/revenue-chart")
+# def get_revenue_chart(
+#     months: int = Query(12, ge=1, le=24),
+#     # 🔒 FEATURE MATRIX: dashboard.view
+#     user: User = Depends(require_feature_permission("dashboard", "view")),
+#     db: Session = Depends(get_db),
+# ):
+#     query = _apply_tenant_filter(db.query(Proposal), Proposal, user)
+#     query = query.filter(Proposal.status == "accepted")
+
+#     now = datetime.utcnow()
+#     start_date = now - timedelta(days=months * 30)
+
+#     results = (
+#         query
+#         .filter(Proposal.accepted_at >= start_date)
+#         .with_entities(
+#             extract("year", Proposal.accepted_at).label("year"),
+#             extract("month", Proposal.accepted_at).label("month"),
+#             func.sum(Proposal.amount).label("revenue"),
+#             func.count(Proposal.id).label("count"),
+#         )
+#         .group_by("year", "month")
+#         .order_by("year", "month")
+#         .all()
+#     )
+
+#     month_names = [
+#         "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+#         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+#     ]
+
+#     data = []
+#     for row in results:
+#         month_idx = int(row.month) - 1
+#         data.append({
+#             "month": month_names[month_idx],
+#             "year": int(row.year),
+#             "label": f"{month_names[month_idx]} {int(row.year)}",
+#             "revenue": float(row.revenue or 0),
+#             "count": int(row.count or 0),
+#         })
+
+#     return {"data": data}
+
 @router.get("/revenue-chart")
 def get_revenue_chart(
     months: int = Query(12, ge=1, le=24),
-    # 🔒 FEATURE MATRIX: dashboard.view
     user: User = Depends(require_feature_permission("dashboard", "view")),
     db: Session = Depends(get_db),
 ):
     query = _apply_tenant_filter(db.query(Proposal), Proposal, user)
     query = query.filter(Proposal.status == "accepted")
 
+    # ─────────────────────────────────────────
+    # 12 months ka range: current month + 11 pichhle
+    # ─────────────────────────────────────────
     now = datetime.utcnow()
-    start_date = now - timedelta(days=months * 30)
+    end_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    start_month = end_month - relativedelta(months=months - 1)
 
     results = (
         query
-        .filter(Proposal.accepted_at >= start_date)
+        .filter(Proposal.accepted_at >= start_month)
         .with_entities(
             extract("year", Proposal.accepted_at).label("year"),
             extract("month", Proposal.accepted_at).label("month"),
@@ -153,24 +206,46 @@ def get_revenue_chart(
         .all()
     )
 
+    # ─────────────────────────────────────────
+    # DB results ko dict mein convert karo
+    # Key: "2025-11", "2025-12", ...
+    # ─────────────────────────────────────────
+    data_map = {}
+    for row in results:
+        key = f"{int(row.year)}-{int(row.month):02d}"
+        data_map[key] = {
+            "revenue": float(row.revenue or 0),
+            "count": int(row.count or 0),
+        }
+
     month_names = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun",
         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
     ]
 
+    # ─────────────────────────────────────────
+    # 12 months ka COMPLETE skeleton banao
+    # Missing months → revenue: 0
+    # ─────────────────────────────────────────
     data = []
-    for row in results:
-        month_idx = int(row.month) - 1
+    current = start_month
+    for _ in range(months):
+        key = f"{current.year}-{current.month:02d}"
+        month_idx = current.month - 1
+
+        entry = data_map.get(key, {"revenue": 0.0, "count": 0})
+
         data.append({
             "month": month_names[month_idx],
-            "year": int(row.year),
-            "label": f"{month_names[month_idx]} {int(row.year)}",
-            "revenue": float(row.revenue or 0),
-            "count": int(row.count or 0),
+            "year": current.year,
+            "label": f"{month_names[month_idx]} {current.year}",
+            "revenue": entry["revenue"],
+            "count": entry["count"],
         })
 
-    return {"data": data}
+        current = current + relativedelta(months=1)
 
+    return {"data": data}
 
 # ============================================================
 # LEAD SOURCES

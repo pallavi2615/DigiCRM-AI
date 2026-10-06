@@ -33,6 +33,7 @@ from app.schemas.lead import (
 logger = logging.getLogger(__name__)                                # ⭐ NEW
 
 router = APIRouter(prefix="/leads", tags=["Leads"])
+from sqlalchemy import or_
 
 
 # ============================================================
@@ -55,6 +56,9 @@ def list_leads(
 
     if user.role != SA_CONST:
         query = query.filter(Lead.tenant_id == user.tenant_id)
+
+    if user.role == ("sales_executive", "executive"):
+        query = query.filter(Lead.assigned_to == user.id)   
 
     if status_filter:
         query = query.filter(Lead.status == status_filter)
@@ -80,6 +84,10 @@ def lead_stats(
     query = db.query(Lead)
     if user.role != SA_CONST:
         query = query.filter(Lead.tenant_id == user.tenant_id)
+
+    # ── 2. Executive → sirf apni leads ──
+    if user.role in ("sales_executive", "executive"):
+        query = query.filter(Lead.assigned_to == user.id)
 
     return {
         "total": query.count(),
@@ -358,7 +366,7 @@ def create_lead(
         status="new",
         priority=payload.priority or "medium",
         estimated_value=payload.estimated_value or 0,
-        assigned_to=payload.assigned_to,
+        assigned_to=payload.assigned_to or user.id,
         custom_fields=payload.custom_fields or {},
     )
     db.add(lead)
