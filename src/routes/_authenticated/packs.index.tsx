@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PACK_GROUPS, type IndustryPack } from "@/lib/industry-packs";
@@ -29,9 +29,14 @@ function PacksIndex() {
   const { data: counts = {} } = useQuery({
     queryKey: ["pack-record-counts"],
     queryFn: async () => {
-      const { data } = await supabase.from("pack_records").select("pack_slug").is("deleted_at", null);
+      // Fetch all records via backend, then count by pack_slug
+      const res = await apiFetch<any[]>("/api/v1/portal/records?limit=500").catch(() => []);
+      const records = Array.isArray(res) ? res : [];
       const map: Record<string, number> = {};
-      for (const r of data ?? []) map[r.pack_slug] = (map[r.pack_slug] ?? 0) + 1;
+      for (const r of records) {
+        const slug = r.pack_slug;
+        if (slug) map[slug] = (map[slug] ?? 0) + 1;
+      }
       return map;
     },
   });

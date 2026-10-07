@@ -140,7 +140,7 @@ export function useActiveIndustry() {
   }
 
   const activeGroup =
-    actualActive === ALL_CRMS
+    isSuperAdmin || actualActive === ALL_CRMS
       ? null
       : INDUSTRY_GROUPS.find((group) => group.slug === actualActive)?.slug ?? null;
 
