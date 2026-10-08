@@ -6,16 +6,15 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Upload, Loader2, Download, CheckCircle2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { apiUpload } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { useQueryClient } from "@tanstack/react-query";
-import { csvToObjects } from "@/lib/csv";
 
 export type CsvImportEntity = "leads" | "contacts" | "companies";
 
 interface FieldSpec {
-  key: string;         // db column
-  aliases: string[];   // accepted csv headers (lowercased, underscored)
+  key: string;
+  aliases: string[];
   required?: boolean;
   type?: "number" | "date" | "string";
 }
@@ -84,59 +83,46 @@ export function CsvImportDialog({ entity, open, onOpenChange }: Props) {
   const downloadTemplate = () => {
     const blob = new Blob([spec.template], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = `${entity}-template.csv`; a.click();
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${entity}-template.csv`;
+    a.click();
     URL.revokeObjectURL(url);
   };
 
   const runImport = async () => {
     if (!file) return toast.error("Choose a CSV file");
-    setBusy(true); setResult(null);
+    setBusy(true);
+    setResult(null);
     try {
-      const text = await file.text();
-      const rows = csvToObjects(text);
-      if (rows.length === 0) throw new Error("CSV is empty or has no data rows");
-      if (rows.length > 1000) throw new Error("Please limit imports to 1,000 rows at a time");
+      const importEndpoint =
+        entity === "leads" ? "/api/v1/leads/import"
+        : entity === "contacts" ? "/api/v1/contacts/import"
+        : "/api/v1/companies/import";
 
-      const errors: string[] = [];
-      const payload: Record<string, unknown>[] = [];
+      const formData = new FormData();
+      formData.append("file", file);
 
-      rows.forEach((raw, idx) => {
-        const record: Record<string, unknown> = { created_by: user?.id };
-        for (const field of spec.fields) {
-          const val = field.aliases.map(a => raw[a]).find(v => v !== undefined && v !== "");
-          if (val === undefined || val === "") {
-            if (field.required) errors.push(`Row ${idx + 2}: missing ${field.key}`);
-            continue;
-          }
-          if (field.type === "number") {
-            const n = Number(String(val).replace(/[,$\s]/g, ""));
-            record[field.key] = Number.isFinite(n) ? n : null;
-          } else if (field.type === "date") {
-            const d = new Date(val);
-            record[field.key] = isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
-          } else {
-            record[field.key] = String(val);
-          }
-        }
-        if (spec.fields.filter(f => f.required).every(f => record[f.key])) {
-          payload.push(record);
-        }
+      const res = await apiUpload<{
+        total_rows: number;
+        imported: number;
+        failed: number;
+        errors: string[];
+      }>(importEndpoint, formData);
+
+      setResult({
+        inserted: res.imported ?? 0,
+        skipped: res.failed ?? 0,
+        errors: res.errors ?? [],
       });
 
-      if (payload.length === 0) throw new Error("No valid rows to import. " + (errors[0] ?? ""));
+      spec.invalidateKeys.forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
 
-      // Insert in chunks of 100
-      let inserted = 0;
-      for (let i = 0; i < payload.length; i += 100) {
-        const chunk = payload.slice(i, i + 100);
-        const { error, count } = await supabase.from(entity).insert(chunk as never, { count: "exact" });
-        if (error) { errors.push(error.message); break; }
-        inserted += count ?? chunk.length;
+      if ((res.imported ?? 0) > 0) {
+        toast.success(`Imported ${res.imported} ${entity}`);
+      } else {
+        toast.warning("No rows imported. Check errors.");
       }
-
-      setResult({ inserted, skipped: rows.length - inserted, errors });
-      spec.invalidateKeys.forEach(k => qc.invalidateQueries({ queryKey: [k] }));
-      if (inserted > 0) toast.success(`Imported ${inserted} ${entity}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Import failed");
     } finally {
@@ -167,12 +153,18 @@ export function CsvImportDialog({ entity, open, onOpenChange }: Props) {
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               className="block w-full text-sm text-muted-foreground file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-primary file:text-primary-foreground file:cursor-pointer"
             />
-            {file && <p className="text-xs text-muted-foreground">{file.name} — {(file.size / 1024).toFixed(1)} KB</p>}
+            {file && (
+              <p className="text-xs text-muted-foreground">
+                {file.name} — {(file.size / 1024).toFixed(1)} KB
+              </p>
+            )}
           </div>
 
           <div className="text-xs text-muted-foreground bg-muted/50 rounded-md p-3">
             <p className="font-medium mb-1">Accepted columns</p>
-            <p className="leading-relaxed">{spec.fields.map(f => f.key + (f.required ? " *" : "")).join(", ")}</p>
+            <p className="leading-relaxed">
+              {spec.fields.map((f) => f.key + (f.required ? " *" : "")).join(", ")}
+            </p>
           </div>
 
           {result && (
@@ -187,8 +179,12 @@ export function CsvImportDialog({ entity, open, onOpenChange }: Props) {
               )}
               {result.errors.length > 0 && (
                 <ul className="text-xs text-destructive list-disc pl-5 max-h-32 overflow-auto">
-                  {result.errors.slice(0, 10).map((e, i) => <li key={i}>{e}</li>)}
-                  {result.errors.length > 10 && <li>+{result.errors.length - 10} more…</li>}
+                  {result.errors.slice(0, 10).map((e, i) => (
+                    <li key={i}>{e}</li>
+                  ))}
+                  {result.errors.length > 10 && (
+                    <li>+{result.errors.length - 10} more…</li>
+                  )}
                 </ul>
               )}
             </div>
@@ -196,9 +192,15 @@ export function CsvImportDialog({ entity, open, onOpenChange }: Props) {
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
           <Button onClick={runImport} disabled={busy || !file}>
-            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+            {busy ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Upload className="mr-2 h-4 w-4" />
+            )}
             Import
           </Button>
         </DialogFooter>

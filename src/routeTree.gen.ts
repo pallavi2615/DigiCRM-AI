@@ -52,6 +52,7 @@ import { Route as AuthenticatedProductsalesRouteImport } from './routes/_authent
 import { Route as AuthenticatedPortalRouteImport } from './routes/_authenticated/portal'
 import { Route as AuthenticatedPipelineRouteImport } from './routes/_authenticated/pipeline'
 import { Route as AuthenticatedPayoutHistoryRouteImport } from './routes/_authenticated/payout-history'
+import { Route as AuthenticatedPayoutAccountsRouteImport } from './routes/_authenticated/payout-accounts'
 import { Route as AuthenticatedPaymentsRouteImport } from './routes/_authenticated/payments'
 import { Route as AuthenticatedPartnerRouteImport } from './routes/_authenticated/partner'
 import { Route as AuthenticatedOnboardingRouteImport } from './routes/_authenticated/onboarding'
@@ -77,6 +78,7 @@ import { Route as AuthenticatedAutomationRouteImport } from './routes/_authentic
 import { Route as AuthenticatedAuditLogsRouteImport } from './routes/_authenticated/audit-logs'
 import { Route as AuthenticatedAiRouteImport } from './routes/_authenticated/ai'
 import { Route as AuthenticatedAffiliatesRouteImport } from './routes/_authenticated/affiliates'
+import { Route as AuthenticatedAdminTemplatesRouteImport } from './routes/_authenticated/admin-templates'
 import { Route as AuthenticatedAdminPacksRouteImport } from './routes/_authenticated/admin-packs'
 import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated/admin'
 import { Route as IndustriesGroupIndexRouteImport } from './routes/industries.$group.index'
@@ -335,6 +337,12 @@ const AuthenticatedPayoutHistoryRoute =
     path: '/payout-history',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedPayoutAccountsRoute =
+  AuthenticatedPayoutAccountsRouteImport.update({
+    id: '/payout-accounts',
+    path: '/payout-accounts',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedPaymentsRoute = AuthenticatedPaymentsRouteImport.update({
   id: '/payments',
   path: '/payments',
@@ -466,6 +474,12 @@ const AuthenticatedAffiliatesRoute = AuthenticatedAffiliatesRouteImport.update({
   path: '/affiliates',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedAdminTemplatesRoute =
+  AuthenticatedAdminTemplatesRouteImport.update({
+    id: '/admin-templates',
+    path: '/admin-templates',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedAdminPacksRoute = AuthenticatedAdminPacksRouteImport.update({
   id: '/admin-packs',
   path: '/admin-packs',
@@ -663,6 +677,7 @@ export interface FileRoutesByFullPath {
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/admin': typeof AuthenticatedAdminRoute
   '/admin-packs': typeof AuthenticatedAdminPacksRoute
+  '/admin-templates': typeof AuthenticatedAdminTemplatesRoute
   '/affiliates': typeof AuthenticatedAffiliatesRoute
   '/ai': typeof AuthenticatedAiRoute
   '/audit-logs': typeof AuthenticatedAuditLogsRoute
@@ -688,6 +703,7 @@ export interface FileRoutesByFullPath {
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/partner': typeof AuthenticatedPartnerRoute
   '/payments': typeof AuthenticatedPaymentsRoute
+  '/payout-accounts': typeof AuthenticatedPayoutAccountsRoute
   '/payout-history': typeof AuthenticatedPayoutHistoryRoute
   '/pipeline': typeof AuthenticatedPipelineRoute
   '/portal': typeof AuthenticatedPortalRoute
@@ -762,6 +778,7 @@ export interface FileRoutesByTo {
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/admin': typeof AuthenticatedAdminRoute
   '/admin-packs': typeof AuthenticatedAdminPacksRoute
+  '/admin-templates': typeof AuthenticatedAdminTemplatesRoute
   '/affiliates': typeof AuthenticatedAffiliatesRoute
   '/ai': typeof AuthenticatedAiRoute
   '/audit-logs': typeof AuthenticatedAuditLogsRoute
@@ -785,6 +802,7 @@ export interface FileRoutesByTo {
   '/onboarding': typeof AuthenticatedOnboardingRoute
   '/partner': typeof AuthenticatedPartnerRoute
   '/payments': typeof AuthenticatedPaymentsRoute
+  '/payout-accounts': typeof AuthenticatedPayoutAccountsRoute
   '/payout-history': typeof AuthenticatedPayoutHistoryRoute
   '/pipeline': typeof AuthenticatedPipelineRoute
   '/portal': typeof AuthenticatedPortalRoute
@@ -859,6 +877,7 @@ export interface FileRoutesById {
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/_authenticated/admin': typeof AuthenticatedAdminRoute
   '/_authenticated/admin-packs': typeof AuthenticatedAdminPacksRoute
+  '/_authenticated/admin-templates': typeof AuthenticatedAdminTemplatesRoute
   '/_authenticated/affiliates': typeof AuthenticatedAffiliatesRoute
   '/_authenticated/ai': typeof AuthenticatedAiRoute
   '/_authenticated/audit-logs': typeof AuthenticatedAuditLogsRoute
@@ -884,6 +903,7 @@ export interface FileRoutesById {
   '/_authenticated/onboarding': typeof AuthenticatedOnboardingRoute
   '/_authenticated/partner': typeof AuthenticatedPartnerRoute
   '/_authenticated/payments': typeof AuthenticatedPaymentsRoute
+  '/_authenticated/payout-accounts': typeof AuthenticatedPayoutAccountsRoute
   '/_authenticated/payout-history': typeof AuthenticatedPayoutHistoryRoute
   '/_authenticated/pipeline': typeof AuthenticatedPipelineRoute
   '/_authenticated/portal': typeof AuthenticatedPortalRoute
@@ -962,6 +982,7 @@ export interface FileRouteTypes {
     | '/sitemap.xml'
     | '/admin'
     | '/admin-packs'
+    | '/admin-templates'
     | '/affiliates'
     | '/ai'
     | '/audit-logs'
@@ -987,6 +1008,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/partner'
     | '/payments'
+    | '/payout-accounts'
     | '/payout-history'
     | '/pipeline'
     | '/portal'
@@ -1061,6 +1083,7 @@ export interface FileRouteTypes {
     | '/sitemap.xml'
     | '/admin'
     | '/admin-packs'
+    | '/admin-templates'
     | '/affiliates'
     | '/ai'
     | '/audit-logs'
@@ -1084,6 +1107,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/partner'
     | '/payments'
+    | '/payout-accounts'
     | '/payout-history'
     | '/pipeline'
     | '/portal'
@@ -1157,6 +1181,7 @@ export interface FileRouteTypes {
     | '/sitemap.xml'
     | '/_authenticated/admin'
     | '/_authenticated/admin-packs'
+    | '/_authenticated/admin-templates'
     | '/_authenticated/affiliates'
     | '/_authenticated/ai'
     | '/_authenticated/audit-logs'
@@ -1182,6 +1207,7 @@ export interface FileRouteTypes {
     | '/_authenticated/onboarding'
     | '/_authenticated/partner'
     | '/_authenticated/payments'
+    | '/_authenticated/payout-accounts'
     | '/_authenticated/payout-history'
     | '/_authenticated/pipeline'
     | '/_authenticated/portal'
@@ -1573,6 +1599,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedPayoutHistoryRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/payout-accounts': {
+      id: '/_authenticated/payout-accounts'
+      path: '/payout-accounts'
+      fullPath: '/payout-accounts'
+      preLoaderRoute: typeof AuthenticatedPayoutAccountsRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/payments': {
       id: '/_authenticated/payments'
       path: '/payments'
@@ -1746,6 +1779,13 @@ declare module '@tanstack/react-router' {
       path: '/affiliates'
       fullPath: '/affiliates'
       preLoaderRoute: typeof AuthenticatedAffiliatesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/admin-templates': {
+      id: '/_authenticated/admin-templates'
+      path: '/admin-templates'
+      fullPath: '/admin-templates'
+      preLoaderRoute: typeof AuthenticatedAdminTemplatesRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/admin-packs': {
@@ -2075,6 +2115,7 @@ const AuthenticatedIndustrySlugRouteWithChildren =
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedAdminRoute: typeof AuthenticatedAdminRoute
   AuthenticatedAdminPacksRoute: typeof AuthenticatedAdminPacksRoute
+  AuthenticatedAdminTemplatesRoute: typeof AuthenticatedAdminTemplatesRoute
   AuthenticatedAffiliatesRoute: typeof AuthenticatedAffiliatesRoute
   AuthenticatedAiRoute: typeof AuthenticatedAiRoute
   AuthenticatedAuditLogsRoute: typeof AuthenticatedAuditLogsRoute
@@ -2100,6 +2141,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedOnboardingRoute: typeof AuthenticatedOnboardingRoute
   AuthenticatedPartnerRoute: typeof AuthenticatedPartnerRoute
   AuthenticatedPaymentsRoute: typeof AuthenticatedPaymentsRoute
+  AuthenticatedPayoutAccountsRoute: typeof AuthenticatedPayoutAccountsRoute
   AuthenticatedPayoutHistoryRoute: typeof AuthenticatedPayoutHistoryRoute
   AuthenticatedPipelineRoute: typeof AuthenticatedPipelineRoute
   AuthenticatedPortalRoute: typeof AuthenticatedPortalRoute
@@ -2129,6 +2171,7 @@ interface AuthenticatedRouteRouteChildren {
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAdminRoute: AuthenticatedAdminRoute,
   AuthenticatedAdminPacksRoute: AuthenticatedAdminPacksRoute,
+  AuthenticatedAdminTemplatesRoute: AuthenticatedAdminTemplatesRoute,
   AuthenticatedAffiliatesRoute: AuthenticatedAffiliatesRoute,
   AuthenticatedAiRoute: AuthenticatedAiRoute,
   AuthenticatedAuditLogsRoute: AuthenticatedAuditLogsRoute,
@@ -2154,6 +2197,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedOnboardingRoute: AuthenticatedOnboardingRoute,
   AuthenticatedPartnerRoute: AuthenticatedPartnerRoute,
   AuthenticatedPaymentsRoute: AuthenticatedPaymentsRoute,
+  AuthenticatedPayoutAccountsRoute: AuthenticatedPayoutAccountsRoute,
   AuthenticatedPayoutHistoryRoute: AuthenticatedPayoutHistoryRoute,
   AuthenticatedPipelineRoute: AuthenticatedPipelineRoute,
   AuthenticatedPortalRoute: AuthenticatedPortalRoute,

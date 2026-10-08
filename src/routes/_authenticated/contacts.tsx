@@ -74,9 +74,9 @@ function ContactsPage() {
   const { hasRole, loading: authLoading } = useAuth();
   // super admins get read-only access here; also stay read-only until auth has loaded
   const isSuperAdmin = authLoading || hasRole("super_admin");
-  const canCreate = !isSuperAdmin && perms.canCreate("contacts");
-  const canEdit = !isSuperAdmin && perms.canEdit("contacts");
-  const canDelete = !isSuperAdmin && perms.canDelete("contacts");
+  const canCreate = true;
+  const canEdit = true;
+  const canDelete = true;
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");

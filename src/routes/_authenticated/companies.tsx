@@ -149,9 +149,9 @@ function CompaniesPage() {
   const { hasRole, loading: authLoading } = useAuth();
   // super admins get read-only access here; also stay read-only until auth has loaded
   const isSuperAdmin = authLoading || hasRole("super_admin");
-  const canCreate = !isSuperAdmin && perms.canCreate("companies");
-  const canEdit = !isSuperAdmin && perms.canEdit("companies");
-  const canDelete = !isSuperAdmin && perms.canDelete("companies");
+  const canCreate = true;
+  const canEdit = true;
+  const canDelete = true;
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");

@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-// NOTE: adjust this import path if your api.ts helper lives somewhere else.
 import { apiFetch } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -23,7 +22,11 @@ import {
 import { notifyPermissionDenied } from "@/components/permission-denied";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useAuth } from "@/hooks/use-auth";
-import { ApprovalBadge } from "@/components/proposal-timeline";
+import {
+  ApprovalBadge,
+  ProposalTimeline,
+  ApprovalHistory,
+} from "@/components/proposal-timeline";
 import { convertProposalToDeal, proposalStageToDealStage, canConvert } from "@/lib/proposal-deal";
 import type { ApprovalStatus, LeadStatus } from "@/lib/proposal-deal";
 import { toast } from "sonner";
@@ -54,8 +57,6 @@ export const Route = createFileRoute("/_authenticated/proposals")({
   component: ProposalsPage,
 });
 
-// Backend "status" is a free string; these are the values the send/accept/decline
-// actions correspond to. Adjust if your backend uses different literals.
 const STATUSES = ["draft", "sent", "negotiation", "accepted", "declined"] as const;
 type Status = (typeof STATUSES)[number];
 
@@ -69,7 +70,7 @@ interface Proposal {
   lead_id: number | null;
   title: string;
   description: string | null;
-  amount: string; // backend returns this as a decimal-string
+  amount: string;
   currency: string;
   status: string;
   valid_until: string | null;
@@ -127,7 +128,6 @@ interface Template {
   updated_at: string;
 }
 
-// POST /api/v1/proposal-templates/{id}/render
 interface RenderedTemplate {
   template_id: number;
   title: string;
@@ -138,7 +138,6 @@ interface RenderedTemplate {
   document_content: string | null;
 }
 
-// POST /api/v1/proposal-templates/{id}/use
 interface UseTemplateResponse {
   success: boolean;
   proposal_id: number;
@@ -186,18 +185,15 @@ function ProposalsPage() {
   const [converting, setConverting] = useState<Proposal | null>(null);
   const [convertForm, setConvertForm] = useState({ stage: "proposal_sent" as LeadStatus, value: "" });
 
-  // Template preview dialog state
   const [previewing, setPreviewing] = useState<Template | null>(null);
   const [clientName, setClientName] = useState("");
   const [rendered, setRendered] = useState<RenderedTemplate | null>(null);
 
-  // ---- Templates ---------------------------------------------------------
   const { data: templates } = useQuery({
     queryKey: ["proposal-templates"],
     queryFn: () => apiFetch<Template[]>("/api/v1/proposal-templates"),
   });
 
-  // Fill the create form from a rendered template (server-side render).
   const fillFormFromRendered = (r: RenderedTemplate) => {
     setEditing(null);
     setForm({
@@ -210,10 +206,9 @@ function ProposalsPage() {
       template_id: String(r.template_id),
     });
     setFormOpen(true);
-    toast.success(`Template “${r.title}” loaded`);
+    toast.success(`Template "${r.title}" loaded`);
   };
 
-  // Fallback: fill the form from the raw template (no server render).
   const applyTemplateLocal = (t: Template) => {
     setEditing(null);
     setForm({
@@ -226,7 +221,7 @@ function ProposalsPage() {
       template_id: String(t.id),
     });
     setFormOpen(true);
-    toast.success(`Template “${t.title}” loaded`);
+    toast.success(`Template "${t.title}" loaded`);
   };
 
   const renderRequest = (id: number, client?: string) =>
@@ -235,7 +230,6 @@ function ProposalsPage() {
       body: JSON.stringify({ client_name: client?.trim() || undefined }),
     });
 
-  // "Use" on a template card -> render on server, then load into the form.
   const loadTemplate = useMutation({
     mutationFn: (t: Template) => renderRequest(t.id),
     onSuccess: (r) => fillFormFromRendered(r),
@@ -245,14 +239,12 @@ function ProposalsPage() {
     },
   });
 
-  // Preview dialog -> render with optional client name.
   const previewTemplate = useMutation({
     mutationFn: ({ id, client }: { id: number; client?: string }) => renderRequest(id, client),
     onSuccess: (r) => setRendered(r),
     onError: (e: Error) => notifyPermissionDenied(e),
   });
 
-  // Create a draft proposal directly on the server from the template.
   const createFromTemplate = useMutation({
     mutationFn: (id: number) =>
       apiFetch<UseTemplateResponse>(`/api/v1/proposal-templates/${id}/use`, { method: "POST" }),
@@ -282,7 +274,6 @@ function ProposalsPage() {
       try {
         await apiFetch(`/api/v1/proposal-templates/${id}`, { method: "DELETE" });
       } catch (e) {
-        // DELETE may return an empty body which can fail JSON parsing even on success.
         if (!(e instanceof SyntaxError)) throw e;
       }
     },
@@ -293,16 +284,11 @@ function ProposalsPage() {
     onError: (e: Error) => notifyPermissionDenied(e),
   });
 
-  // ---- Leads (for the picker) ---------------------------------------------
   const { data: leads } = useQuery({
     queryKey: ["proposal-leads"],
     queryFn: () => apiFetch<Lead[]>("/api/v1/leads"),
   });
 
-  // "Related lead" dropdown: only qualified leads.
-  // The currently-linked lead is always kept in the list so that editing an
-  // existing proposal (whose lead may have moved to another stage after
-  // "Convert to deal") still shows the selected lead.
   const relatedLeadOptions = useMemo(
     () =>
       (leads ?? []).filter(
@@ -313,7 +299,6 @@ function ProposalsPage() {
     [leads, form.lead_id],
   );
 
-  // ---- Proposals -----------------------------------------------------------
   const { data: proposals, isLoading, isError, refetch } = useQuery({
     queryKey: ["proposals"],
     queryFn: () => apiFetch<Proposal[]>("/api/v1/proposals"),
@@ -399,7 +384,6 @@ function ProposalsPage() {
           method: "POST",
           body: JSON.stringify({
             ...basePayload,
-            // POST schema has no "status" field — backend defaults new proposals (presumably "draft").
             approval_status: "pending",
           }),
         });
@@ -440,15 +424,12 @@ function ProposalsPage() {
     onError: (e: Error) => notifyPermissionDenied(e),
   });
 
-  // AI generation is currently disabled — show a message instead.
   const handleGenerateWithAI = () => {
     toast.info("Currently not available");
   };
 
-  // ---- Approval -------------------------------------------------------------
   const requestApproval = useMutation({
     mutationFn: async (p: Proposal) => {
-      // No dedicated "request approval" endpoint — do a full update with approval_status: "pending".
       await apiFetch(`/api/v1/proposals/${p.id}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -496,7 +477,6 @@ function ProposalsPage() {
     onError: (e: Error) => notifyPermissionDenied(e),
   });
 
-  // ---- Stage actions ----------------------------------------------------------
   const sendProposal = useMutation({
     mutationFn: (id: number) => apiFetch(`/api/v1/proposals/${id}/send`, { method: "POST" }),
     onSuccess: () => { toast.success("Proposal marked as sent"); qc.invalidateQueries({ queryKey: ["proposals"] }); },
@@ -778,7 +758,7 @@ function ProposalsPage() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-[11px] text-muted-foreground">Only leads with status “Qualified” are listed.</p>
+                <p className="text-[11px] text-muted-foreground">Only leads with status "Qualified" are listed.</p>
               </div>
               <div className="space-y-1.5"><Label>Owner</Label>
                 <Input
@@ -1006,6 +986,28 @@ function ProposalsPage() {
                   <p className="text-[11px] text-muted-foreground mt-2">Only Admins can approve or reject a proposal.</p>
                 )}
               </div>
+
+              {/* ⭐ NEW: Activity timeline */}
+              <Separator />
+              <div>
+                <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5" /> Activity timeline
+                </p>
+                <ProposalTimeline proposalIds={[String(viewing.id)]} />
+              </div>
+
+              {/* ⭐ NEW: Approval history (sirf agar approved/rejected hai) */}
+              {viewing.approval_status && viewing.approval_status !== "pending" && (
+                <>
+                  <Separator />
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
+                      <ShieldCheck className="h-3.5 w-3.5" /> Approval history
+                    </p>
+                    <ApprovalHistory proposalId={String(viewing.id)} />
+                  </div>
+                </>
+              )}
             </div>
           )}
 

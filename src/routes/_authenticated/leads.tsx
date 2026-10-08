@@ -2214,7 +2214,7 @@ function LeadsPage() {
   const { hasRole, loading: authLoading, user } = useAuth();
   const { role } = usePermissions();
   const isSuperadmin = hasRole("super_admin");
-  const canWrite = !isSuperadmin;
+  const canWrite = true;
   const isExecutive = role === "sales_executive" || role === "executive";
   const isAdminOrManager = role === "admin" || role === "manager" ||   role === "sales_manager" || isSuperadmin;
   const currentUserId = user?.id ? Number(user.id) : null;

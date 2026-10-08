@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { apiFetch } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { approvalLabel, type ApprovalStatus } from "@/lib/proposal-deal";
 import { CheckCircle2, Clock, FileText, Send, ShieldCheck, XCircle, ArrowRightLeft } from "lucide-react";
@@ -11,6 +11,7 @@ export interface ProposalEvent {
   description: string | null;
   created_at: string;
   actor_id?: string | null;
+  actor_name?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -33,7 +34,6 @@ const toneFor = (type: string) => {
   return "text-muted-foreground";
 };
 
-/** Approval badge shared by the Proposals module and the Pipeline deal view. */
 export function ApprovalBadge({ status }: { status: ApprovalStatus | null | undefined }) {
   const s = (status ?? "not_requested") as ApprovalStatus;
   const tone =
@@ -44,25 +44,16 @@ export function ApprovalBadge({ status }: { status: ApprovalStatus | null | unde
   return <span className={`rounded px-1.5 py-0.5 text-[10px] ${tone}`}>{approvalLabel[s]}</span>;
 }
 
-/**
- * Timeline of a proposal's lifecycle — created, sent, reviewed, approved and
- * converted. Reads `proposal_events`, which RLS scopes to proposals the
- * signed-in user may already see.
- */
 export function ProposalTimeline({ proposalIds }: { proposalIds: string[] }) {
   const ids = proposalIds.filter(Boolean);
   const { data, isLoading } = useQuery({
     queryKey: ["proposal-events", ids.join(",")],
     enabled: ids.length > 0,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("proposal_events")
-        .select("id, proposal_id, event_type, description, created_at")
-        .in("proposal_id", ids)
-        .order("created_at", { ascending: false })
-        .limit(50);
-      if (error) throw error;
-      return (data ?? []) as ProposalEvent[];
+      const res = await apiFetch<ProposalEvent[]>(
+        `/api/v1/proposal-events?proposal_ids=${encodeURIComponent(ids.join(","))}&limit=50`
+      );
+      return Array.isArray(res) ? res : [];
     },
   });
 
@@ -88,32 +79,15 @@ export function ProposalTimeline({ proposalIds }: { proposalIds: string[] }) {
   );
 }
 
-/**
- * Approval history — who requested, approved or rejected the proposal and
- * when. Only Admins and Super Admins can create approve/reject entries; this
- * view is read-only for everyone who can already see the proposal.
- */
 export function ApprovalHistory({ proposalId }: { proposalId: string }) {
   const { data, isLoading } = useQuery({
     queryKey: ["proposal-approval-history", proposalId],
     enabled: !!proposalId,
     queryFn: async () => {
-      const { data: events, error } = await supabase
-        .from("proposal_events")
-        .select("id, proposal_id, event_type, description, created_at, actor_id, metadata")
-        .eq("proposal_id", proposalId)
-        .like("event_type", "approval_%")
-        .order("created_at", { ascending: false })
-        .limit(50);
-      if (error) throw error;
-      const rows = (events ?? []) as ProposalEvent[];
-      const ids = [...new Set(rows.map((r) => r.actor_id).filter(Boolean))] as string[];
-      const names = new Map<string, string>();
-      if (ids.length) {
-        const { data: profs } = await supabase.from("profiles").select("id, full_name, email").in("id", ids);
-        (profs ?? []).forEach((p) => names.set(p.id, p.full_name || p.email || "Unknown"));
-      }
-      return rows.map((r) => ({ ...r, actor: r.actor_id ? names.get(r.actor_id) ?? "Unknown" : "System" }));
+      const res = await apiFetch<ProposalEvent[]>(
+        `/api/v1/proposal-events?proposal_ids=${proposalId}&event_type_prefix=approval_&limit=50`
+      );
+      return Array.isArray(res) ? res : [];
     },
   });
 
@@ -131,9 +105,9 @@ export function ApprovalHistory({ proposalId }: { proposalId: string }) {
             <div className="min-w-0">
               <p className="font-medium">{e.description || e.event_type.replace(/_/g, " ")}</p>
               <p className="text-muted-foreground">
-                {e.actor} · {new Date(e.created_at).toLocaleString()}
+                {e.actor_name ?? "System"} · {new Date(e.created_at).toLocaleString()}
               </p>
-              {notes && <p className="text-muted-foreground italic">“{notes}”</p>}
+              {notes && <p className="text-muted-foreground italic">"{notes}"</p>}
             </div>
           </li>
         );

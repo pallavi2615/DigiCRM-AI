@@ -1,18 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
-import { useServerFn } from "@tanstack/react-start";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Check, Download, FileDown, Loader2, Minus, ShieldCheck } from "lucide-react";
-import type { Action } from "@/lib/permissions";
-import { getPermissionMatrix } from "@/lib/matrix.functions";
-import { issueRolePdfLink } from "@/lib/pdf-links.functions";
-import { notifyPermissionDenied } from "@/components/permission-denied";
+import { Check, Download, FileDown, Minus, ShieldCheck } from "lucide-react";
+import { MODULES, ROLES, type Action } from "@/lib/permissions";
+import { useAuth } from "@/hooks/use-auth";
 import type { AppRole } from "@/hooks/use-auth";
 import { downloadCsv, objectsToCsv } from "@/lib/csv";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/feature-matrix")({
   head: () => ({
@@ -27,29 +24,34 @@ export const Route = createFileRoute("/_authenticated/feature-matrix")({
 const ACTIONS: Action[] = ["view", "create", "edit", "delete"];
 
 function FeatureMatrixPage() {
-  const loadMatrix = useServerFn(getPermissionMatrix);
-  const requestPdfLink = useServerFn(issueRolePdfLink);
-  const [pending, setPending] = useState<AppRole | null>(null);
+  const { user, isAdmin } = useAuth();
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["permission-matrix"],
-    queryFn: () => loadMatrix(),
-  });
+  // Build matrix client-side from MODULES constant
+  const data = useMemo(() => {
+    const myRoles: AppRole[] = user?.roles ?? [];
+    const isSuperAdmin = myRoles.includes("super_admin");
 
-  const downloadPdf = async (role: AppRole) => {
-    setPending(role);
-    try {
-      const { url } = await requestPdfLink({ data: { role } });
-      window.open(url, "_blank", "noopener");
-    } catch (e) {
-      notifyPermissionDenied(e, () => void downloadPdf(role));
-    } finally {
-      setPending(null);
-    }
+    return {
+      full: isSuperAdmin || isAdmin,
+      roles: ROLES,
+      myRoles,
+      rows: MODULES.map((m) => ({
+        key: m.key,
+        label: m.label,
+        panel: m.panel,
+        route: m.route,
+        description: m.description,
+        perms: m.perms,
+      })),
+    };
+  }, [user, isAdmin]);
+
+  const downloadPdf = (role: AppRole) => {
+    // PDF export not yet implemented — show message
+    toast.info(`PDF export for "${role}" coming soon`);
   };
 
   const exportCsv = () => {
-    if (!data) return;
     const rows = data.rows.flatMap((m) =>
       data.roles.map((r) => ({
         panel: m.panel,
@@ -67,13 +69,6 @@ function FeatureMatrixPage() {
       objectsToCsv(rows, ["panel", "module", "route", "role", "view", "create", "edit", "delete"]),
     );
   };
-
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-64"><Loader2 className="h-6 w-6 animate-spin" /></div>;
-  }
-  if (error || !data) {
-    return <p className="text-sm text-muted-foreground">Your permissions could not be loaded. Please try again.</p>;
-  }
 
   const panels = [...new Set(data.rows.map((r) => r.panel))];
 
@@ -108,12 +103,9 @@ function FeatureMatrixPage() {
                 size="sm"
                 variant="outline"
                 className="mt-3 w-full"
-                disabled={pending === r.key}
-                onClick={() => void downloadPdf(r.key)}
+                onClick={() => downloadPdf(r.key)}
               >
-                {pending === r.key
-                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  : <FileDown className="mr-2 h-4 w-4" />}
+                <FileDown className="mr-2 h-4 w-4" />
                 Download PDF
               </Button>
             </CardContent>
@@ -182,7 +174,7 @@ function FeatureMatrixPage() {
       ))}
 
       <p className="text-xs text-muted-foreground">
-        This list is produced on the server from your signed-in account, and database rules enforce the same limits.
+        This list is built from the permission matrix in the app, and database rules enforce the same limits.
       </p>
     </div>
   );
